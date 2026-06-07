@@ -1,0 +1,34 @@
+From: 4noha
+Subject: rkdrm: accept WSDISPLAYIO_SMODE so mlterm-fb can use DUMBFB
+License: ISC (this patch modifies OpenBSD source and inherits ISC; see ../LICENSE-ISC)
+
+DM250: rkdrm: accept WSDISPLAYIO_SMODE so mlterm-fb runs.
+
+mlterm-fb (framebuffer build) switches the wsdisplay mode to
+WSDISPLAYIO_MODE_DUMBFB and then draws into the raw framebuffer.
+rkdrm's wsioctl does not implement WSDISPLAYIO_SMODE (-1 = ENOTTY), so
+mlterm-fb cannot reach the cairo path and falls back to xcore (bitmap
+fonts) — which means no CJK glyphs.
+
+simplefb (sys/dev/fdt/simplefb.c) accepts SMODE as a no-op (return 0).
+Doing the same in rkdrm lets mlterm-fb wsmmap() the framebuffer
+physical address (rkdrm_wsmmap already exposes
+sfb->obj->dmamap->dm_segs[0].ds_addr) and draw as DUMBFB.
+
+Caveat: wsdisplay rasops drawing and user-space direct drawing can
+collide in principle, but while mlterm-fb is running it occupies the
+entire screen so wsdisplay is not painting text — no observed conflict
+on DM250.
+
+--- a/sys/dev/fdt/rkdrm.c
++++ b/sys/dev/fdt/rkdrm.c
+@@ -316,6 +316,9 @@
+ 	case WSDISPLAYIO_LINEBYTES:
+ 		*(u_int *)data = ri->ri_stride;
+ 		return 0;
++	case WSDISPLAYIO_SMODE:
++		/* no-op (simplefb style); allows mlterm-fb to use DUMBFB */
++		return 0;
+ 	case WSDISPLAYIO_SVIDEO:
+ 	case WSDISPLAYIO_GVIDEO:
+ 		return 0;

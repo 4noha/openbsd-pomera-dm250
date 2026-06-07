@@ -1,0 +1,46 @@
+# BTstack port/posix-h4: disable LE Secure Connections + Cross Transport
+# Key Derivation to stabilise pairing on DM250 + Android.
+#
+# License: BSD-like (inherits from BlueKitchen BTstack v1.6.2; this patch
+# modifies BTstack source — see NOTICE for the upstream license).
+#
+# Context:
+# On the DM250 + AP6212A (Broadcom BCM43430) + Android pairing path,
+# Numeric Comparison and Just Works both failed repeatedly with
+# `pairing complete status=0x05` (HCI Authentication Failure). Cold chip
+# reset, deleting tlv.dat, and rebooting Android did not help.
+#
+# Disabling LE Secure Connections + Cross Transport Key Derivation (so
+# only Classic SSP legacy derivation is used) made Just Works pair
+# reliably to `status=0x00`, after which RFCOMM open + HELLO + mux
+# carried traffic.
+#
+# Hypothesis: the chip's OTP BD_ADDR (XX:XX:XX:XX:XX:XX) differs from a
+# factory-default value that earlier pair attempts associated with a
+# key on the Android side, and Cross Transport key derivation trips on
+# that mismatch.
+#
+# Side effect: no MITM protection (Just Works). Acceptable for a
+# thin-client lab device. Revisit once BD_ADDR is fixed + LE re-enabled.
+#
+# Apply with: patch -p1 -d port/posix-h4 < this-file
+
+--- port/posix-h4/btstack_config.h.orig
++++ port/posix-h4/btstack_config.h
+@@ -18,7 +18,6 @@
+ #define ENABLE_BLE
+ #define ENABLE_CLASSIC
+-#define ENABLE_CROSS_TRANSPORT_KEY_DERIVATION
++// #define ENABLE_CROSS_TRANSPORT_KEY_DERIVATION (disabled — see patch header)
+ #define ENABLE_GOEP_L2CAP
+ #define ENABLE_HFP_WIDE_BAND_SPEECH
+ #define ENABLE_L2CAP_ENHANCED_RETRANSMISSION_MODE
+@@ -28,7 +27,7 @@
+ #define ENABLE_LE_DATA_LENGTH_EXTENSION
+ #define ENABLE_LE_PERIPHERAL
+ #define ENABLE_LE_PRIVACY_ADDRESS_RESOLUTION
+-#define ENABLE_LE_SECURE_CONNECTIONS
++// #define ENABLE_LE_SECURE_CONNECTIONS (disabled — see patch header)
+ #define ENABLE_LOG_ERROR
+ #define ENABLE_LOG_INFO
+ #define ENABLE_MICRO_ECC_FOR_LE_SECURE_CONNECTIONS

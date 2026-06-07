@@ -1,0 +1,38 @@
+# BTstack v1.6.2 OpenBSD/armv7 compatibility patches.
+#
+# License: BSD-like (inherits from BlueKitchen BTstack v1.6.2; see NOTICE).
+#
+# Two trivial fixes for OpenBSD's stricter feature-macro hygiene:
+#  1. errno.h must be explicitly included (POSIX strict mode in OpenBSD
+#     does not transitively expose errno through other headers).
+#  2. strings.h needed for strncasecmp (POSIX places strncasecmp in
+#     <strings.h>, not <string.h>).
+#
+# Apply with: patch -p1 -d /path/to/btstack < this-file
+--- platform/posix/btstack_run_loop_posix.c.orig	Fri May 29 15:40:32 2026
++++ platform/posix/btstack_run_loop_posix.c	Fri May 29 15:44:17 2026
+@@ -47,6 +47,7 @@
+ #define _POSIX_C_SOURCE 200809
+
+ #include "btstack_run_loop_posix.h"
++#include <errno.h>
+
+ #include "btstack_run_loop.h"
+ #include "btstack_util.h"
+@@ -54,6 +55,7 @@
+ #include "btstack_debug.h"
+
+ #include <stdio.h>
++#include <errno.h>
+ #include <stdlib.h>
+ #include <sys/errno.h>
+ #include <sys/select.h>
+--- chipset/bcm/btstack_chipset_bcm.c.orig
++++ chipset/bcm/btstack_chipset_bcm.c
+@@ -47,6 +47,7 @@
+ #define BTSTACK_FILE__ "btstack_chipset_bcm.c"
+
+ #include <string.h>   /* memcpy */
++#include <strings.h>  /* strncasecmp on OpenBSD */
+ #include <stdio.h>    /* snprintf */
+ #include <stdlib.h>   /* malloc/free */

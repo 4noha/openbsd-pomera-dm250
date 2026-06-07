@@ -1,0 +1,63 @@
+From: 4noha
+Subject: if_bwfm_sdio: guard bwfm_sdio_task against half-initialized softc on resume
+License: ISC (this patch modifies OpenBSD source and inherits ISC; see ../LICENSE-ISC)
+
+if_bwfm_sdio: guard bwfm_sdio_task against half-initialized softc on resume.
+
+Problem (2026-06-02..03, DM250 / rk3128):
+  After applying dwmmc-resume-pwrseq.diff the resume-time chip
+  power-cycle was working and the original error 60 (ETIMEDOUT) was
+  gone. But on the re-attach window bwfm_sdio_task could run from systq
+  while the softc was still being initialised (sc->sc_lock == NULL) —
+  NULL deref -> kernel data abort. ddb trace:
+    bwfm_sdio_task -> taskq_thread.
+
+Fix:
+  1. Early-return from bwfm_sdio_task() when sc->sc_lock is unset.
+     (Filters out a task that fired between softc allocation and the
+     attach path setting sc_lock.)
+  2. In bwfm_sdio_detach(), call taskq_barrier(systq) after task_del
+     so any in-flight task that already passed the NULL guard drains
+     before detach proceeds.
+
+Target: sys/dev/sdmmc/if_bwfm_sdio.c.
+
+CAUTION: this patch DOES NOT resolve the resume crash by itself. It
+eliminates one class of fault (error 60 + sc_task NULL deref) but in
+testing the crash moved to a later layer (see
+ieee80211-media-status-nullguard.diff and bwfm-suspend-down.diff).
+Retained in the stack as scaffolding for further work and so the v2
+working kernel can be rebuilt.
+
+--- sys/dev/sdmmc/if_bwfm_sdio.c.orig
++++ sys/dev/sdmmc/if_bwfm_sdio.c
+@@ bwfm_sdio_task(void *arg) @@
+ 	struct bwfm_sdio_softc *sc = arg;
+ 	uint32_t clkctl, devctl, intstat, hostint;
++
++	/*
++	 * On resume the chip is power-cycled and bwfm re-attaches; the softc
++	 * may not be fully initialized yet when this task fires from systq.
++	 * Touching sc->sc_lock (and everything it guards) before init would
++	 * fault.  Bail out until the attach path has set sc_lock.
++	 */
++	if (sc->sc_lock == NULL)
++		return;
+
+ 	rw_enter_write(&sc->sc_lock);
+
+@@ bwfm_sdio_detach(struct device *self, int flags) @@
+ 	task_del(systq, &sc->sc_task);
++	taskq_barrier(systq);	/* wait for an in-flight sc_task to drain */
+
+ 	bwfm_detach(&sc->sc_sc, flags);
+
+Notes:
+  - sc_lock type is `struct rwlock`. Comparing against NULL works as a
+    cheap "before rw_init" check; a dedicated "ready" flag would be
+    cleaner.
+  - taskq_barrier(systq) is called from detach (process context); OK.
+  - Upstream (jcs rk3128 / OpenBSD) does not yet implement bwfm
+    DVACT_SUSPEND/RESUME that takes net80211 nodes / BA timers down,
+    which is needed for a real fix (see bwfm-suspend-down.diff for the
+    v3 approach that actually works without firmware I/O on QUIESCE).

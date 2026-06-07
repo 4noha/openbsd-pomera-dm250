@@ -1,0 +1,26 @@
+From: 4noha
+Subject: bcmbt_fdt: extend post-firmware HCI reset delay from 250ms to 2s
+License: ISC (this patch modifies OpenBSD source and inherits ISC; see ../LICENSE-ISC)
+
+DM250 (AP6212A / Broadcom BCM43430) cannot complete post-firmware HCI
+Reset within the upstream 250ms window. Extend the post-firmware quiet
+period to 2s so the chip is reachable when bcmbt_fdt proceeds to
+bcmbt_uart_init() / HCI Reset.
+
+Note: this patch alone is NOT sufficient to drive BT bring-up to
+completion on every DM250 unit observed (see kernel-patches/README.md
+"Status" column). It is, however, the minimal change that unblocks the
+2026-05-29 successful bring-up captured in the prebuilt kernel
+`bsd.armv7.delay-2s` (see prebuilt-info/).
+
+--- sys/dev/fdt/bcmbt_fdt.c.orig	Fri May 29 12:29:01 2026
++++ sys/dev/fdt/bcmbt_fdt.c	Fri May 29 12:29:53 2026
+@@ -205,7 +205,7 @@
+ 	free(fw, M_DEVBUF, fwlen);
+
+ 	/* wait for chip reset after firmware download */
+-	delay(250000);
++	delay(2000000); /* DM250 patch: 250ms was insufficient */
+
+ 	/* re-initialize UART after chip reset */
+ 	if (bcmbt_uart_init(sc, 115200) != 0) {

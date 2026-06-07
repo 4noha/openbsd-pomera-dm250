@@ -1,0 +1,103 @@
+openbsd-pomera-dm250
+====================
+
+This project bundles together patches, scripts, configuration, and
+documentation that build on, reference, or redistribute work from a
+number of upstream projects. Their authors and licenses are credited
+below. Nothing in this NOTICE file overrides the terms of those upstream
+licenses; it exists only to make attribution easy to find.
+
+If you redistribute this repository or build on it, please preserve this
+file (or an equivalent set of credits) in your derived work.
+
+--------------------------------------------------------------------------------
+OpenBSD
+--------------------------------------------------------------------------------
+The OpenBSD Project (https://www.openbsd.org/) supplies the base
+operating system that runs on the DM250. Kernel patches under
+`kernel-patches/` modify files from the upstream OpenBSD source tree and
+inherit the ISC license used by that tree. See `LICENSE-ISC` and
+https://www.openbsd.org/policy.html for the canonical license terms.
+
+Acknowledgement of the OpenBSD developers does not imply that this
+project is endorsed by the OpenBSD Project.
+
+--------------------------------------------------------------------------------
+jcs / openbsd-src (rk3128 branch)
+--------------------------------------------------------------------------------
+joshua stein's rk3128 branch of openbsd-src
+(https://github.com/jcs/openbsd-src) provides the bring-up patches that
+made OpenBSD run on the DM250 in the first place. The patches in
+`kernel-patches/` are layered on top of that branch. License: BSD/ISC,
+inherited from the OpenBSD source files being modified.
+
+joshua stein's write-up "Installing OpenBSD on the Pomera DM250"
+(https://jcs.org/2024/01/15/dm250) is the primary reference for the
+hardware bring-up procedure.
+
+--------------------------------------------------------------------------------
+armbian Broadcom firmware
+--------------------------------------------------------------------------------
+The AP6212 / BCM4343A1 Bluetooth firmware blob (referenced by the
+install steps under `install/` and consumed by `panctl/`) originates from
+the armbian-firmware tree
+(https://github.com/armbian/firmware/tree/master/ap6212). It is
+redistributed by Broadcom / Cypress under their respective firmware
+license terms. This project does not re-license the firmware; consult
+the armbian and Broadcom/Cypress sources for the canonical terms.
+
+--------------------------------------------------------------------------------
+BlueKitchen BTstack
+--------------------------------------------------------------------------------
+The Bluetooth PAN daemon under `panctl/` is built on top of BlueKitchen
+BTstack v1.6.2 (https://github.com/bluekitchen/btstack). BTstack is
+distributed by BlueKitchen GmbH under a BSD-style license; for
+non-commercial / open source use the terms in the upstream `LICENSE`
+file apply. Commercial users should contact BlueKitchen directly.
+
+--------------------------------------------------------------------------------
+Linux RK818 driver (reference only)
+--------------------------------------------------------------------------------
+The OCV (open-circuit voltage) curve and calibration constants used by
+the battery PS1 helper under `battery/` were derived by reading the
+upstream Linux RK818 PMIC / fuel-gauge drivers
+(`drivers/mfd/rk808.c`, `drivers/power/supply/rk818_battery.c`).
+That code is licensed under the GNU General Public License v2. **No GPL
+source is redistributed here**: only numeric constants and behavioural
+observations were used, in a clean-room rewrite. The `battery/` shell
+helpers themselves are MIT-licensed.
+
+--------------------------------------------------------------------------------
+EKESETE eMMC backup tool (ichinomoto)
+--------------------------------------------------------------------------------
+The initial DM250 eMMC bring-up flow relies on the EKESETE eMMC backup
+tool by ichinomoto, used to capture a full image of the factory eMMC
+before any destructive operation. This repository does **not** bundle
+that tool; `install/` documents how to obtain and run it separately.
+
+--------------------------------------------------------------------------------
+Inconsolata Nerd Font (referenced for terminal display)
+--------------------------------------------------------------------------------
+Recommended Nerd Font glyphs (FA4 PUA range) used by the battery PS1
+prompt come from the Nerd Fonts project
+(https://github.com/ryanoasis/nerd-fonts). Glyphs and metadata are
+redistributed by upstream under their original licenses (typically OFL).
+Only references and code points are used here; no font files are
+bundled in this repository.
+
+--------------------------------------------------------------------------------
+King Jim Pomera DM250 family
+--------------------------------------------------------------------------------
+"Pomera" and "DM250" are product names of King Jim Co., Ltd. This
+project is **not** affiliated with, endorsed by, or sponsored by
+King Jim. All hardware modifications and software changes described here
+are performed by the user at their own risk and will likely void the
+manufacturer's warranty.
+
+--------------------------------------------------------------------------------
+Summary of project-side licenses
+--------------------------------------------------------------------------------
+- Top-level scripts, tooling, and documentation: MIT (see LICENSE).
+- Kernel patches under `kernel-patches/`: ISC, inherited from OpenBSD
+  (see LICENSE-ISC).
+- Third-party works are credited above and retain their own licenses.

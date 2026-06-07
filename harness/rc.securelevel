@@ -1,0 +1,8 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 4noha
+#
+# /etc/rc.securelevel — runs once before kern.securelevel is raised
+# pomera DM250 LED: gpio1 pin 8 = red, pin 12 = green (bicolor)
+gpioctl -q gpio1 8  set out red_led
+gpioctl -q gpio1 12 set out green_led

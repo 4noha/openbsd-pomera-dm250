@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 4noha
+fontsize = 21
+use_anti_alias = false
+ENCODING = UTF-8
+exec_cmd = /bin/ksh -l
+bg_color = black
+fg_color = white
+use_aafont = true
+scrollbar_mode = none
+letter_space = 2
+line_space = 0
+col_size_of_width_a = 1
+unicode_full_width = false

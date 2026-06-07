@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 4noha
+
+# macOS
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+Icon?
+.Spotlight-V100
+.Trashes
+
+# Object / build artifacts
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.lo
+*.la
+*.swp
+*.swo
+*~
+
+# Build / dist directories (generated)
+build/
+dist/
+out/
+target/
+.cache/
+
+# VM disks and large bring-up images — keep these out of git, push to
+# GitHub Releases instead. See `docs/build-vm.md` and `prebuilt-info/`.
+*.qcow2
+*.qcow2.*
+*.img
+*.img.gz
+*.img.xz
+*.img.zst
+*.iso
+*.bin.full
+*.fs
+*.fs.gz
+
+# Cross-build chroots / staging trees (very large, machine-specific)
+chroot/
+sysroot/
+work/
+tmp/
+toolchain/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.iml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Node (used only by the release workflow tooling, if any)
+node_modules/
+
+# Local override files (never commit secrets)
+.env
+.env.*
+*.local
+secrets/
+
+# Test / verification scratch
+*.log
+*.log.*
+scratch/

@@ -1,0 +1,209 @@
+From: 4noha
+Subject: if_bwfm_sdio: numbered diagnostic printfs in attach / preinit / detach / activate
+License: ISC (this patch modifies OpenBSD source and inherits ISC; see ../LICENSE-ISC)
+
+if_bwfm_sdio: instrument attach / preinit / detach / activate with
+numbered "BWFMD NN" printfs so the persistent harness log (see
+harness/) can pinpoint exactly which step of the bwfm path runs (or
+fails to run) across suspend / resume.
+
+This is a diagnostic-only patch. It is NOT functional: each marker is a
+`printf("BWFMD NN ...")` placed at a meaningful step boundary. Use
+together with diag-suspend-verbose.diff to align the bwfm timeline with
+the suspend / resume phase markers from subr_suspend.c.
+
+Numbers are stable across the patch set so harness log greps can match
+on e.g. "BWFMD 01" (match entry), "BWFMD A1" (activate QUIESCE),
+"BWFMD D1" (detach entry), and so on. Do not keep this in production
+kernels: every attach/resume cycle emits ~30 lines.
+
+--- sys/dev/sdmmc/if_bwfm_sdio.c.pre-diag	Fri Jun  5 12:38:06 2026
++++ sys/dev/sdmmc/if_bwfm_sdio.c	Fri Jun  5 12:42:41 2026
+@@ -202,6 +202,7 @@
+ int
+ bwfm_sdio_match(struct device *parent, void *match, void *aux)
+ {
++	printf("BWFMD 01 match entry\n");
+ 	struct sdmmc_attach_args *saa = aux;
+ 	struct sdmmc_function *sf = saa->sf;
+ 	struct sdmmc_cis *cis;
+@@ -259,6 +260,7 @@
+ 	uint32_t reg;
+
+ 	printf("\n");
++printf("BWFMD 10 attach entry rootvp=%p cold=%d\n", rootvp, cold);
+
+ #if defined(__HAVE_FDT)
+ 	if (sf->cookie)
+@@ -273,6 +275,7 @@
+
+ 	rw_assert_wrlock(&sf->sc->sc_lock);
+ 	sc->sc_lock = &sf->sc->sc_lock;
++	printf("BWFMD 11 attach lock taken\n");
+
+ 	sc->sc_sf = mallocarray(sf->sc->sc_function_count + 1,
+ 	    sizeof(struct sdmmc_function *), M_DEVBUF, M_WAITOK);
+@@ -285,6 +288,7 @@
+
+ 	sdmmc_io_set_blocklen(sc->sc_sf[1], 64);
+ 	sdmmc_io_set_blocklen(sc->sc_sf[2], 512);
++	printf("BWFMD 12 attach blocklens set, about to enable F1\n");
+
+ 	/* Enable Function 1. */
+ 	if (sdmmc_io_function_enable(sc->sc_sf[1]) != 0) {
+@@ -296,9 +300,11 @@
+ 	    bwfm_sdio_read_4(sc, 0x18000000)));
+
+ 	/* Force PLL off */
++	printf("BWFMD 14 attach F1 enabled, forcing PLL off\n");
+ 	bwfm_sdio_write_1(sc, BWFM_SDIO_FUNC1_CHIPCLKCSR,
+ 	    BWFM_SDIO_FUNC1_CHIPCLKCSR_FORCE_HW_CLKREQ_OFF |
+ 	    BWFM_SDIO_FUNC1_CHIPCLKCSR_ALP_AVAIL_REQ);
++	printf("BWFMD 15 attach PLL force off written, about to chip_attach\n");
+
+ 	sc->sc_sc.sc_buscore_ops = &bwfm_sdio_buscore_ops;
+ 	if (bwfm_chip_attach(&sc->sc_sc) != 0) {
+@@ -307,12 +313,14 @@
+ 	}
+
+ 	sc->sc_cc = bwfm_chip_get_core(&sc->sc_sc, BWFM_AGENT_CORE_CHIPCOMMON);
++	printf("BWFMD 17 attach chip_attach ok chip=0x%x rev=%d\n", sc->sc_sc.sc_chip.ch_chip, sc->sc_sc.sc_chip.ch_chiprev);
+ 	if (sc->sc_cc == NULL) {
+ 		printf("%s: cannot find chipcommon core\n", DEVNAME(sc));
+ 		goto err;
+ 	}
+
+ 	core = bwfm_chip_get_core(&sc->sc_sc, BWFM_AGENT_CORE_SDIO_DEV);
++	printf("BWFMD 18 attach cc core ok\n");
+ 	if (core->co_rev >= 12) {
+ 		reg = bwfm_sdio_read_1(sc, BWFM_SDIO_FUNC1_SLEEPCSR);
+ 		if (!(reg & BWFM_SDIO_FUNC1_SLEEPCSR_KSO)) {
+@@ -322,29 +330,36 @@
+ 	}
+
+ 	/* TODO: drive strength */
++	printf("BWFMD 19 attach SLEEPCSR section done\n");
+
+ 	bwfm_sdio_write_1(sc, BWFM_SDIO_CCCR_BRCM_CARDCTRL,
+ 	    bwfm_sdio_read_1(sc, BWFM_SDIO_CCCR_BRCM_CARDCTRL) |
+ 	    BWFM_SDIO_CCCR_BRCM_CARDCTRL_WLANRESET);
++	printf("BWFMD 20 attach WLANRESET written\n");
+
+ 	core = bwfm_chip_get_pmu(&sc->sc_sc);
+ 	bwfm_sdio_write_4(sc, core->co_base + BWFM_CHIP_REG_PMUCONTROL,
+ 	    bwfm_sdio_read_4(sc, core->co_base + BWFM_CHIP_REG_PMUCONTROL) |
+ 	    (BWFM_CHIP_REG_PMUCONTROL_RES_RELOAD <<
+ 	     BWFM_CHIP_REG_PMUCONTROL_RES_SHIFT));
++	printf("BWFMD 21 attach PMU reload written\n");
+
+ 	sdmmc_io_function_disable(sc->sc_sf[2]);
++	printf("BWFMD 22 attach F2 disabled\n");
+
+ 	bwfm_sdio_write_1(sc, BWFM_SDIO_FUNC1_CHIPCLKCSR, 0);
+ 	sc->sc_clkstate = CLK_SDONLY;
++	printf("BWFMD 23 attach CLK_SDONLY set\n");
+
+ 	sc->sc_sc.sc_bus_ops = &bwfm_sdio_bus_ops;
+ 	sc->sc_sc.sc_proto_ops = &bwfm_proto_bcdc_ops;
+ 	bwfm_attach(&sc->sc_sc);
++	printf("BWFMD 25 attach bwfm_attach returned\n");
+ 	if (rootvp == NULL) /* can't use cold */
+ 		config_mountroot(self, bwfm_attachhook);
+ 	else
+ 		kthread_create(bwfm_sdio_attachhook, sc, NULL, DEVNAME(sc));
++	printf("BWFMD 26 attach scheduled kthread\n");
+ 	return;
+
+ err:
+@@ -355,6 +370,7 @@
+ bwfm_sdio_attachhook(void *arg)
+ {
+ 	struct bwfm_sdio_softc *sc = arg;
++	printf("BWFMD 30 sdio_attachhook kthread entry\n");
+
+ 	bwfm_attachhook(&sc->sc_sc.sc_dev);
+ 	kthread_exit(0);
+@@ -373,6 +389,7 @@
+ 		return 0;
+
+ 	rw_enter_write(sc->sc_lock);
++	printf("BWFMD 40 preinit lock taken\n");
+
+ 	switch (bwfm->sc_chip.ch_chip)
+ 	{
+@@ -434,6 +451,7 @@
+ 		goto err;
+
+ 	sc->sc_alp_only = 1;
++	printf("BWFMD 41 preinit firmware loaded size=%zu\n", size);
+ 	if (bwfm_sdio_load_microcode(sc, ucode, size,
+ 	    nvram, nvlen) != 0) {
+ 		printf("%s: could not load microcode\n",
+@@ -443,6 +461,7 @@
+ 		goto err;
+ 	}
+ 	sc->sc_alp_only = 0;
++	printf("BWFMD 42 preinit microcode loaded\n");
+ 	free(ucode, M_DEVBUF, size);
+ 	free(nvram, M_DEVBUF, nvsize);
+
+@@ -451,11 +470,13 @@
+ 		goto err;
+
+ 	clk = bwfm_sdio_read_1(sc, BWFM_SDIO_FUNC1_CHIPCLKCSR);
++	printf("BWFMD 43 preinit CLK_AVAIL ok\n");
+ 	bwfm_sdio_write_1(sc, BWFM_SDIO_FUNC1_CHIPCLKCSR,
+ 	    clk | BWFM_SDIO_FUNC1_CHIPCLKCSR_FORCE_HT);
+
+ 	bwfm_sdio_dev_write(sc, SDPCMD_TOSBMAILBOXDATA,
+ 	    SDPCM_PROT_VERSION << SDPCM_PROT_VERSION_SHIFT);
++	printf("BWFMD 44 preinit FORCE_HT set + mailbox written, about to enable F2\n");
+ 	if (sdmmc_io_function_enable(sc->sc_sf[2]) != 0) {
+ 		printf("%s: cannot enable function 2\n", DEVNAME(sc));
+ 		goto err;
+@@ -463,7 +484,9 @@
+
+ 	bwfm_sdio_dev_write(sc, SDPCMD_HOSTINTMASK,
+ 	    SDPCMD_INTSTATUS_HMB_SW_MASK|SDPCMD_INTSTATUS_CHIPACTIVE);
++	printf("BWFMD 47 preinit F2 enabled, host intmask written\n");
+ 	bwfm_sdio_write_1(sc, BWFM_SDIO_WATERMARK, 8);
++	printf("BWFMD 48 preinit watermark set, entering SR-capable section\n");
+
+ 	if (bwfm_chip_sr_capable(bwfm)) {
+ 		reg = bwfm_sdio_read_1(sc, BWFM_SDIO_FUNC1_WAKEUPCTRL);
+@@ -501,9 +524,11 @@
+ 		goto err;
+ 	}
+ 	sdmmc_intr_enable(sc->sc_sf[1]);
++	printf("BWFMD 50 preinit interrupt established + enabled\n");
+ 	rw_exit(sc->sc_lock);
+
+ 	sc->sc_initialized = 1;
++	printf("BWFMD 51 preinit complete\n");
+ 	return 0;
+
+ err:
+@@ -773,6 +798,7 @@
+ int
+ bwfm_sdio_detach(struct device *self, int flags)
+ {
++	printf("BWFMD D1 detach entry flags=%d\n", flags);
+ 	struct bwfm_sdio_softc *sc = (struct bwfm_sdio_softc *)self;
+
+ 	bwfm_detach(&sc->sc_sc, flags);
+@@ -831,6 +857,7 @@
+
+ 	switch (act) {
+ 	case DVACT_QUIESCE:
++		printf("BWFMD A1 activate DVACT_QUIESCE if_flags=0x%x ic_state=%d\n", ifp->if_flags, ic->ic_state);
+ 		/*
+ 		 * net80211 stack down with zero chip/SDIO I/O.  Do NOT call
+ 		 * bwfm_activate()/bwfm_stop(): those talk to firmware over a
+@@ -855,6 +882,7 @@
+ 		}
+ 		break;
+ 	case DVACT_WAKEUP:
++		printf("BWFMD A2 activate DVACT_WAKEUP\n");
+ 		/*
+ 		 * The card was force-detached on suspend and is re-attached by
+ 		 * sdmmc on resume; bwfm_attachhook() re-inits the chip and

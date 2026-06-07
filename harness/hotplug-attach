@@ -1,0 +1,25 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 4noha
+#
+# /etc/hotplug/attach — sd[0-9] が attach されたとき呼ばれる。
+# $1 = device class (2 = disk)、 $2 = device name (例: sd0)
+#
+# SD_DUID は「/mnt/sd にしたい SD カード」の 16 桁 hex DUID。
+# disklabel sd0 | grep duid で取れる。 別 SD を間違って mount しないための
+# 照合用。 別機展開時は実機の値で置き換えるか、 環境変数で渡す。
+DEVCLASS=$1
+DEVNAME=$2
+SD_DUID="${SD_DUID:-<dm250-sd-duid>}"
+
+[ "$DEVCLASS" = 2 ] || exit 0
+
+case "$DEVNAME" in
+sd[0-9])
+    DUID=$(disklabel "$DEVNAME" 2>/dev/null | awk "/^duid:/{print \$2}")
+    if [ "$DUID" = "$SD_DUID" ]; then
+        # mount + ldconfig は集約ヘルパーに一本化 (rc.local と共用、ロックで直列化)。
+        sh /etc/mount-sd-local.sh
+    fi
+    ;;
+esac

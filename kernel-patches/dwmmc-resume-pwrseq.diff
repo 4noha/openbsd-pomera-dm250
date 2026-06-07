@@ -1,0 +1,83 @@
+From: 4noha
+Subject: dwmmc: power-cycle SDIO device (bwfm WiFi) on resume
+License: ISC (this patch modifies OpenBSD source and inherits ISC; see ../LICENSE-ISC)
+
+dwmmc: power-cycle SDIO device (bwfm WiFi) on resume.
+
+NOTE: superseded by dwmmc-resume-full-cycle.diff. Kept in-tree as the
+first step in the chain because it was the patch actually deployed on
+the v2 working kernel and because the diagnostic story below explains
+WHY the full-cycle variant exists. If applying the modern stack,
+prefer dwmmc-resume-full-cycle.diff and skip this one.
+
+Problem (2026-06-02, DM250 / rk3128):
+  After suspend/resume the WiFi chip stops responding:
+    bwfm0 detached
+    bwfm0 at sdmmc1 function 1
+    bwfm_sdio_buf_read: error 60        <- errno 60 = ETIMEDOUT
+  -> chip not answering on SDIO after resume. ifconfig down/up does
+  not recover it.
+
+Root cause:
+  dwmmc_activate(DVACT_RESUME) re-initialised host state (clock,
+  reset, host_reset, bus params) only and never power-cycled the
+  attached SDIO device (the WiFi chip). The chip lost state across
+  suspend, so when config_activate_children() runs bwfm's re-attach
+  the firmware-load SDIO transfers ETIMEDOUT. dwmmc_bus_power() only
+  runs the pwrseq on an sc_vdd 0 -> on transition, but at this point
+  sc_vdd still holds the pre-suspend voltage and the pwrseq is
+  skipped there too.
+
+Fix:
+  In DVACT_RESUME explicitly call dwmmc_pwrseq_pre / post (the
+  mmc-pwrseq is the WiFi WL_REG_ON line) to power-cycle the chip
+  before the child re-attaches.
+
+Target: sys/dev/fdt/dwmmc.c::dwmmc_activate()
+
+--- sys/dev/fdt/dwmmc.c.orig
++++ sys/dev/fdt/dwmmc.c
+@@ dwmmc_activate(struct device *self, int act)
+ 	switch (act) {
+ 	case DVACT_RESUME:
+ 		/* dwmmc_host_reset will clobber these */
+ 		bus_width = sc->sc_bus_width;
+ 		bus_freq = sc->sc_bus_freq;
+ 		bus_timing = sc->sc_bus_timing;
+
+ 		clock_enable_all(sc->sc_node);
+ 		reset_deassert_all(sc->sc_node);
++
++		/*
++		 * The attached SDIO device (e.g. bwfm(4) WiFi) lost power
++		 * across suspend.  dwmmc_bus_power() only runs the pwrseq on a
++		 * 0->on sc_vdd transition, but sc_vdd still holds the
++		 * pre-suspend voltage here, so the child's re-attach finds the
++		 * chip unresponsive (bwfm_sdio_buf_read: error 60 == ETIMEDOUT).
++		 * Power-cycle the chip via its pwrseq reset-gpios so the
++		 * re-attach below (config_activate_children) succeeds.
++		 */
++		if (sc->sc_pwrseq) {
++			dwmmc_pwrseq_pre(sc->sc_pwrseq);
++			dwmmc_pwrseq_post(sc->sc_pwrseq);
++		}
++
+ 		dwmmc_host_reset(sc);
+
+ 		if (bus_width)
+ 			dwmmc_bus_width(sc, bus_width);
+ 		if (bus_freq)
+ 			dwmmc_bus_clock(sc, bus_freq, bus_timing);
+ 		break;
+ 	}
+
+ 	return config_activate_children(self, act);
+
+Notes:
+  - dwmmc_pwrseq_pre / post safely no-op when phandle == 0; the
+    sc_pwrseq guard above is belt-and-braces.
+  - pwrseq_post delay()s for post-power-on-delay-ms from DT. If the
+    pre -> post gap is too short for the chip to become visible, add a
+    delay(10000) (10 ms) between pre and post.
+  - Upstream PR candidate: the generic dwmmc resume path skipping
+    pwrseq could bite other SDIO-WiFi boards too.

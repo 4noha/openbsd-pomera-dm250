@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 4noha
+# /var/unbound/etc/unbound.conf
+#
+# pomera DM250 用 unbound 設定。Tailscale 起動 bootstrap で
+# `controlplane.tailscale.com` を解決するため、mux 経由 (RFCOMM → Android cell)
+# でも確実に通る **DoT (DNS over TLS, 853/TCP)** を上流に使う。
+#
+# 前提:
+# - panctl (RFCOMM mux client) が走っており、TCP outbound が
+#   pf divert-to で mux client に流れている (../04-outbound-intercept.md)
+# - UDP 53 は信用しない。Android キャリア網が UDP 53 を黙って書き換える
+#   ケースがあるのと、mux が TCP/UDP 両対応とはいえ TCP の方が経路実績が
+#   高い (DoT は TCP 1 本で済む)
+# - 上流に解決を委譲する forward-only 設定。pomera 上で recursive はやらない
+#   (権威 NS への問い合わせが大量発生して mux の帯域を食う)
+#
+# 参考: man 5 unbound.conf, OpenBSD `/var/unbound/etc/unbound.conf` 既定
+
+server:
+    verbosity: 1
+
+    # ループバックのみで listen。pomera は LAN サービス側ではない
+    interface: 127.0.0.1
+    interface: ::1
+    port: 53
+
+    # /etc/resolv.conf からは nameserver 127.0.0.1 で参照
+    access-control: 127.0.0.0/8 allow
+    access-control: ::1 allow
+
+    # 起動時に root hint を読み込まない (forward-only なので不要)
+    root-hints: ""
+    harden-glue: yes
+    harden-dnssec-stripped: yes
+    harden-below-nxdomain: yes
+    qname-minimisation: yes
+
+    # キャッシュは小さめ (pomera は 1GB RAM)
+    msg-cache-size: 8m
+    rrset-cache-size: 16m
+
+    # IPv6 query は出さない (Android cell の v6 経路は未検証)
+    do-ip6: no
+    prefer-ip6: no
+
+    # mux は TCP 帯域 1〜2 Mbps、UDP datagram も通せるが TCP の方が
+    # 経路確実。DoT は TCP-only なので prefer-tcp は付ける
+    tcp-upstream: yes
+
+    # Tailscale magicDNS と将来揉めないようにローカル zone は明示しない
+    # (Tailscale 起動後はそちらの resolver が "*.ts.net" を握る)
+
+    # 信頼する CA bundle (OpenBSD 既定)
+    tls-cert-bundle: "/etc/ssl/cert.pem"
+
+    # Tailscale が自分の DNS を上書きしてくる場合がある:
+    #   tailscaled は /etc/resolv.conf を直接書き換えるモードと
+    #   `nameserver 100.100.100.100` (MagicDNS) を挿すモードがあり、
+    #   ここでは tailscaled --no-modify-dns 相当に倒すことを前提。
+    #   /etc/rc.d/tailscaled で `flags="--state=/var/db/tailscale/tailscaled.state \
+    #                              --resolv-conf=/dev/null"` 程度を設定して、
+    #   /etc/resolv.conf は固定で 127.0.0.1 のままにする。
+
+forward-zone:
+    # ルートを丸ごと上流 DoT に委譲
+    name: "."
+    forward-tls-upstream: yes
+    # Cloudflare (1.1.1.1) — DoT 公式 SNI "cloudflare-dns.com"。最低限の冗長で
+    # Quad9 (9.9.9.9, SNI "dns.quad9.net") を 2nd にしている。
+    # Google (8.8.8.8) を入れないのは Tailscale 接続前に Google 系名前空間に
+    # 偏りすぎるのを避けるため (好みで入れ替えてよい)
+    forward-addr: 1.1.1.1@853#cloudflare-dns.com
+    forward-addr: 1.0.0.1@853#cloudflare-dns.com
+    forward-addr: 9.9.9.9@853#dns.quad9.net
+    forward-addr: 149.112.112.112@853#dns.quad9.net
+
+# --- 設定の意図メモ ---
+# 1. TCP-only かつ DoT で固定する理由:
+#    - mux の経路が確実 (pf divert-to で TCP/UDP 両方拾うが、Android 側で
+#      UDP 53 が ISP/キャリアによって透明書換される事故を避ける)
+#    - DoT 上流は SNI 検証で MITM を弾く
+# 2. Cloudflare を 1st にする理由:
+#    - Tailscale が `controlplane.tailscale.com` を引く際、上流は anycast で
+#      地理的に最も近い回答が出る。1.1.1.1 は AS13335、Quad9 は AS19281
+#    - 個人の好みで入れ替え可。Quad9 は Mandiant フィルタが入るのが利点/欠点
+# 3. forward-zone を `.` 1 個にしている理由:
+#    - Tailscale の MagicDNS で "*.ts.net" は tailscaled が握る。unbound は
+#      MagicDNS の手前にいるが、tailscaled の resolver は /etc/resolv.conf を
+#      経由しないので食い違わない (tailscaled の resolver が UDP 100.100.100.100
+#      で名前を返す)
+# 4. なぜ `unwind` (OpenBSD 同梱の forward-only resolver) を使わないか:
+#    - unwind は 6.5+ 標準で軽量だが、forward-tls-upstream に相当する設定が
+#      `dns over https` (DoH) ベースで、unbound ほど成熟していない (要追検証)
+#    - 既存資産 (Linux/Mac での同等 unbound config) と読み替えやすい
+#    - 不要になったら unwind に乗せ換える価値はある (TODO)

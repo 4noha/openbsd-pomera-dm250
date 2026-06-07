@@ -1,0 +1,39 @@
+#!/bin/ksh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 4noha
+# /etc/rc.d/panctl — pomera 側 panctl daemon の rc(8) wrapper.
+#
+# 起動前提:
+#   - /etc/firmware/BCM4343A1.hcd (armbian の AP6212A 版) が配置済
+#   - kernel が Plan 2 patch (bcmbt_fdt.c の delay 拡張) 入り
+#   - dmesg | grep bcmbt → "bcmbt0: address xx:..." が出てる
+#   - Android アプリが事前にペアリング済 (BD_ADDR メモ済み)
+#   - /etc/hostname.tun0 で tun0 を事前作成 (panctl が /dev/tun0 を握る)
+#   - /var/db/panctl/ が存在 (TLV link key 永続化用)
+#
+# 設定: /etc/rc.conf.local に
+#   panctl_flags="--android-bdaddr AA:BB:CC:DD:EE:FF -t h4 -d /dev/cua00 \
+#       --udp-mode tun --tun-dev /dev/tun0"
+# を書く。
+
+# cold-boot 対策: boot critical バイナリは eMMC /usr/local.boot/ に置く。
+# /usr/local は SD(/mnt/sd, noauto) への symlink で pkg_scripts 時点では
+# 未マウント → 旧 /usr/local/sbin/panctl だと "not found" / divert busy になる。
+daemon="/usr/local.boot/panctl"
+daemon_flags=""
+daemon_user="root"
+daemon_logger="daemon.info"
+
+. /etc/rc.d/rc.subr
+
+# /dev/cua00 + /var/db/panctl 書き込み + /dev/tun0 open + raw socket は
+# root 必須。 panctl 自身が pledge/unveil を実装するのは将来課題。
+
+rc_pre() {
+    install -d -o root -g wheel -m 0700 /var/db/panctl
+    install -d -o root -g wheel -m 0755 /var/run/panctl
+    # tun0 が hostname.tun0 経由で生まれてないなら作る (defence in depth)
+    /sbin/ifconfig tun0 >/dev/null 2>&1 || /sbin/ifconfig tun0 create
+}
+
+rc_cmd $1

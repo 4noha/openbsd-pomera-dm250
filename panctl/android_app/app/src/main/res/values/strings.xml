@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Wake Android Tether</string>
+    <string name="channel_name">RFCOMM mux</string>
+    <string name="channel_description">Persistent notification while the BT RFCOMM mux listener is up.</string>
+    <string name="notification_title">Wake Android Tether</string>
+    <string name="notification_text_listening">Listening on BT RFCOMM (mux)…</string>
+    <string name="notification_text_handling">Mux up with %1$s</string>
+</resources>

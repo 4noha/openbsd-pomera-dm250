@@ -1,0 +1,130 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 4noha
+#
+# claude — run on the pomera. Attach the home Mac's tmux (claude-master).
+# While attached:
+#   - push pomera battery/net state (PS1 cache /tmp/.prompt-*) to the Mac
+#     so tmux renders it in status-right (mechanism B / pomera-push).
+#   - shrink mlterm-fb font to 12 on attach; restore 19 on detach.
+# Tuned for the "outside" case (BT-tether), so blackouts are tolerated:
+#   - app-level keepalive holds short silences in one session.
+#   - if the session dies anyway, reconnect with backoff and reattach.
+#     The tmux session lives on the Mac, so the work state is preserved.
+#
+# Prerequisites:
+#   - ~/.ssh/config has Host claude with ControlMaster auto / ControlPersist.
+#   - Key is passphrase-less or ssh-agent has it (the push loop is
+#     non-interactive).
+#   - netwatchd (or whatever you run for battery/net) updates
+#     /tmp/.prompt-{bat,net} (see battery/).
+#   - On the Mac, ~/.tmux.conf calls ~/bin/pomera-status-show.sh in
+#     status-right (see pomera-tmux-status.md).
+#
+# Usage:  claude [session]    # default session: claude-master
+set -u
+
+REMOTE=claude                       # ssh Host alias from ~/.ssh/config
+SESSION="${1:-claude-master}"
+REMOTE_FILE=/tmp/pomera-status      # file the Mac-side tmux reads
+INTERVAL=5
+FONT_ON=12                          # mlterm-fb size while attached
+FONT_OFF=19                         # mlterm-fb size after detach
+SSHOPT="-o ConnectTimeout=4 -o BatchMode=yes"
+
+esc=$(printf '\033')
+
+# Resize mlterm-fb font via OSC 5379. Only emit when stdout is a TTY.
+# (Going through "mlterm-fb -e su -l ..." can lose $MLTERM under su, so
+#  TTY detection is more robust than checking $MLTERM. OSC 5379 is a
+#  no-op on terminals that don't recognize it.)
+set_font() {
+    [ -t 1 ] && printf '%s]5379;fontsize=%s\007' "$esc" "$1"
+}
+
+build_status() {
+    batraw=$(cat /tmp/.prompt-bat 2>/dev/null)
+    bat=$(printf '%s' "$batraw" | sed "s/${esc}\\[[0-9;]*m//g")   # strip color -> "66%"
+    net=$(cat /tmp/.prompt-net 2>/dev/null)
+    # Same Nerd Font glyphs as PS1 (wifi=U+F1EB, bt=U+F293). Color via tmux markup.
+    wifi_g=$(printf '\xef\x87\xab')
+    bt_g=$(printf '\xef\x8a\x93')
+    # Battery color: read netwatchd's ANSI escape directly so PS1 and tmux match.
+    #   208m=charging(orange) / 31m=<=15%(red) / 32m=full(green) / 37m=normal(white)
+    case "$batraw" in
+        *208m*) batcol=colour208 ;;
+        *31m*)  batcol=red ;;
+        *32m*)  batcol=green ;;
+        *37m*)  batcol=white ;;
+        *)      batcol=cyan ;;
+    esac
+    # Use netwatchd's color for wifi/bt on/off (green32=wifi on, blue34=bt on).
+    # If you re-color netwatchd, update these cases.
+    case "$net" in *32m*) wcol=green ;; *) wcol=colour244 ;; esac   # on=green / off=gray
+    case "$net" in *34m*) bcol=blue  ;; *) bcol=colour244 ;; esac   # on=blue  / off=gray
+    # Emit content only; the styling (black box + padding) is applied by the
+    # Mac-side helper (pomera-status-show.sh). #[fg=...] markup is honored by
+    # tmux at status paint time; bg stays at the segment's black.
+    printf '#[fg=%s]%s #[fg=%s]%s #[fg=%s]%s' \
+        "$batcol" "${bat:-?}" "$wcol" "$wifi_g" "$bcol" "$bt_g"
+}
+
+push_loop() {
+    while :; do
+        build_status | ssh $SSHOPT "$REMOTE" "cat > $REMOTE_FILE" 2>/dev/null
+        sleep "$INTERVAL"
+    done
+}
+
+# Open the ControlMaster before the push loop runs so the push loop is
+# never the thing prompting for a passphrase. If the key is passphrase
+# protected, the prompt happens here, once; push and attach reuse it.
+if ! ssh "$REMOTE" -O check 2>/dev/null; then
+    ssh -fN "$REMOTE" 2>/dev/null \
+        || echo "claude: warn: could not open ControlMaster; status push may fail (check key/agent/net)" >&2
+fi
+
+# Multi-push guard: if a previous push loop was orphaned (network drop
+# before the trap fired), it would keep writing the old format and you'd
+# see "pomera box reappears every now and then while detached". Track
+# the PID and kill the prior loop on each start.
+PIDFILE=/tmp/.pomera-push.pid
+[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
+
+set_font "$FONT_ON"
+push_loop &
+LOOP=$!
+echo "$LOOP" > "$PIDFILE"
+
+# On detach / exit: stop loop, remove Mac-side file (= disconnected state
+# from the helper's POV), restore font.
+cleanup() {
+    kill "$LOOP" 2>/dev/null
+    rm -f "$PIDFILE"
+    ssh $SSHOPT "$REMOTE" "rm -f $REMOTE_FILE" 2>/dev/null
+    set_font "$FONT_OFF"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM      # Ctrl-C breaks the reconnect loop; cleanup still runs via EXIT.
+
+# --- Roam-resilient connection (assumes BT-tether is the underlying network) ---
+#  1. app-level keepalive (ServerAlive) tolerates short blackouts in one session
+#     (15 s x 6 = 90 s of silence allowed).
+#  2. if the session dies anyway, reconnect and re-attach. The tmux session
+#     lives on the Mac, so the work state is preserved. Clean detach
+#     (Ctrl-b d -> rc 0) exits the loop; ssh death (rc != 0) reconnects.
+SSH_KEEP="-o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o TCPKeepAlive=no -o ConnectTimeout=10 -o Compression=yes"
+# Run the remote command through a login shell. Plain `ssh host "tmux ..."`
+# uses a non-login shell on the Mac (PATH=/usr/bin:/bin:...) so e.g.
+# Homebrew's tmux (/opt/homebrew/bin/tmux) is not found -> looks like a
+# disconnection. $SHELL -l -c forces login mode so the .zprofile / PATH
+# are sourced. $SHELL is expanded on the remote side.
+delay=2
+while :; do
+    ssh $SSH_KEEP "$REMOTE" -t "exec \$SHELL -l -c 'tmux attach -t $SESSION || tmux new -s $SESSION'"
+    rc=$?
+    [ "$rc" -eq 0 ] && break
+    printf 'claude: connection dropped (rc=%s). reconnecting in %ss... (Ctrl-C to abort)\n' "$rc" "$delay" >&2
+    sleep "$delay"
+    [ "$delay" -lt 10 ] && delay=$((delay + 2))   # 2 -> 4 -> ... -> 10 s ceiling
+done

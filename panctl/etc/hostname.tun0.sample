@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 4noha
+# /etc/hostname.tun0 — panctl (BT uplink) の tun0 設定 + WiFi→BT フェイルオーバー
+#
+# panctl が /dev/tun0 を握る。アドレスは netstart 時に hostname.tun0(これ) で
+# 先に振っておく。末尾の backup default が「WiFi が無いとき自動で BT を
+# default にする」肝で、外 (WiFi 圏外) で繋がらなかった原因の修正。
+#
+#   # on pomera (installed)
+#   doas cp hostname.tun0.sample /etc/hostname.tun0
+#   doas sh /etc/netstart tun0
+inet 10.66.66.2 255.255.255.0 10.66.66.1
+mtu 1000
+
+# --- WiFi→BT 自動フェイルオーバー (デーモン不要・自己回復) ---
+# WiFi(bwfm0) が落ちると dhcpleased が prio 12 の default を撤去する。
+# この prio 48 (劣後) の default が残り、実効 default = tun0(BT) になる。
+# WiFi 復帰時は dhcpleased が prio 12 を再投入 → WiFi が再び優先。
+# prio 48 > 12 なので WiFi がある間は常に WiFi が勝つ (非破壊)。
+# 実機検証 2026-06-02: WiFi default 削除で egress が自動で tun0 に落ち、
+# 名前解決 (MagicDNS→上流) + https が BT 経由で疎通することを確認。
+!route -qn add -priority 48 default 10.66.66.1

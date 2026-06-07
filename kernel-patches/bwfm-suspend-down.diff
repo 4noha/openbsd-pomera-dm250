@@ -1,0 +1,290 @@
+From: 4noha
+Subject: if_bwfm_sdio + net80211: tear net80211 down on suspend WITHOUT firmware I/O (v3)
+License: ISC (this patch modifies OpenBSD source and inherits ISC; see ../LICENSE-ISC)
+
+if_bwfm_sdio: bring net80211 down on suspend WITHOUT touching the chip (v3).
+
+Problem (2026-06-05, DM250 / rk3128) — root cause of the resume crash:
+  With WiFi up across "close lid -> resume", a kernel data abort fires
+  in one of two places (ddb photos from the device):
+    (1) bwfm_update_node+0x40  (r6 = NULL, faulting proc = ifconfig)  L1 translation fault
+    (2) ieee80211_ba_del+0x2c  (bad pointer)                          L1 translation fault
+  Stacking the earlier patches (dwmmc-resume-pwrseq +
+  bwfm-sdio-resume-guard) plus ieee80211-media-status-nullguard
+  eliminated their own classes of crash, but BOTH of these faults
+  remained. Not a fix — the crash had moved.
+
+Why it crashes (paths verified against /usr/src on the build VM):
+
+  1. kern/subr_suspend.c::sleep_state() calls
+        config_suspend_all(DVACT_QUIESCE)   // chip still powered
+        config_suspend_all(DVACT_SUSPEND)
+     in order. But sys/dev/sdmmc/if_bwfm_sdio.c registers a cfattach
+     (bwfm_sdio_ca) with NO ca_activate — so DVACT_QUIESCE / SUSPEND /
+     RESUME / WAKEUP never reach bwfm. Nothing tears net80211 down
+     before the SoC suspends. (Compare sys/dev/pci/if_bwfm_pci.c which
+     does install a ca_activate.)
+
+  2. Meanwhile sys/dev/sdmmc/sdmmc.c::sdmmc_activate(DVACT_SUSPEND)
+     force-detaches and re-discovers each card. dwmmc never sets
+     SMC_CAPS_NONREMOVABLE in saa.caps (see sys/dev/fdt/dwmmc.c), so
+     the bus is removable from sdmmc's point of view, and the WiFi
+     card gets detached unconditionally. dmesg shows the
+     "bwfm0 detached / bwfm0 at sdmmc1 function 1" sequence around
+     resume. The detach path is
+        bwfm_sdio_detach
+          -> ic/bwfm.c:bwfm_detach()
+          -> ieee80211_ifdetach()
+          -> ieee80211_node_detach().
+
+  3. ieee80211_node_detach() (net80211/ieee80211_node.c around 792-806)
+     frees ic_bss directly via ic_node_free. Only
+     ieee80211_free_node() / ieee80211_node_cleanup() call
+     ieee80211_ba_del(), and that direct-free path does not pass
+     through them. The BA timers armed on ic_bss are therefore not
+     cancelled before the node is freed; stale timeouts and stale
+     cleanup work later touch the freed node -> fault (2).
+
+  4. On resume, netwatchd brings the interface back up via ifconfig.
+     bwfm_ioctl() (ic/bwfm.c around 842-846) checks
+     ic_state == IEEE80211_S_RUN before walking nodes
+     (SIOCG80211NODE/ALLNODES). Because nothing dropped ic_state to
+     S_INIT on suspend, ic_state is still S_RUN even though ic_bss is
+     NULL/stale. bwfm_update_nodes() ->
+     bwfm_update_node(sc, ic->ic_bss) hits memcpy(ni->ni_macaddr,...)
+     with r6 = NULL — fault (1), faulting proc = ifconfig (matches the
+     observation exactly).
+
+  => Both faults share one root cause: net80211 is NOT taken to S_INIT
+  before suspend.
+
+History — v1 and why it HUNG:
+  v1 installed a ca_activate (bwfm_sdio_activate) that on DVACT_QUIESCE
+  called bwfm_activate(act) -> bwfm_stop(ifp). That looked symmetrical
+  to bwfm_pci_activate, but bwfm_stop() in ic/bwfm.c (around 580-601)
+  issues a sequence of synchronous firmware commands:
+      BWFM_C_SET_SSID / BWFM_C_DOWN / BWFM_C_SET_AP / BWFM_C_SET_INFRA
+      / BWFM_C_UP / BWFM_C_SET_PM / "mpc"
+      + sc->sc_bus_ops->bs_stop(sc)
+  These all funnel through bwfm_fwvar_cmd_set_* ->
+  bwfm_proto_bcdc_set_dcmd -> bwfm_proto_bcdc_txctl -> bs_txctl ->
+  SDIO I/O. By DVACT_QUIESCE the RK3128 suspend path has already
+  started gating SDIO power/clocks, so the chip stops answering, each
+  fwvar tsleep_nsec() times out, and the entire suspend HANGS.
+
+  net80211 teardown does not need a live chip: BA flush / node free /
+  ic_state = S_INIT all live in net80211 and do not touch SDIO. v3
+  splits the operations cleanly: do the net80211 teardown directly,
+  perform ZERO firmware I/O.
+
+Fix (v3, this patch — two files):
+
+  A) sys/dev/sdmmc/if_bwfm_sdio.c
+     Register a ca_activate (bwfm_sdio_activate) on bwfm_sdio_ca and
+     implement it WITHOUT calling bwfm_activate / bwfm_stop:
+       DVACT_QUIESCE: if IFF_UP, under splnet():
+         - ieee80211_ba_del(ic->ic_bss)           cancel armed BA timers
+         - ieee80211_free_allnodes(ic, 0)         free tree nodes; keep
+                                                   ic_bss (arg 0 means do
+                                                   NOT cleanup ic_bss so
+                                                   its BA arrays survive
+                                                   for the resume re-init)
+         - ic->ic_state = IEEE80211_S_INIT        direct assignment so
+                                                   ic_newstate ->
+                                                   bwfm_newstate ->
+                                                   bwfm_stop firmware
+                                                   path is NEVER entered
+         - ieee80211_set_link_state(ic, LINK_STATE_DOWN)
+         - clear IFF_UP | IFF_RUNNING; ifq_clr_oactive
+       DVACT_WAKEUP: no-op. The card was force-detached on suspend and
+                     is re-attached by sdmmc; bwfm_attachhook() re-inits
+                     the chip and rebuilds ic_bss. The
+                     ic_state==S_RUN guard in bwfm_ioctl() blocks fault
+                     (1) while ic_state is S_INIT. No stale pointers
+                     because QUIESCE issued zero firmware I/O.
+     => bwfm_activate / bwfm_stop / bwfm_fwvar_* / bs_txctl / bs_stop /
+        BWFM_C_* are COMPLETELY OUT of the QUIESCE path. This is the
+        essential difference from v1.
+     Forward decl of bwfm_sdio_activate goes near void
+     bwfm_sdio_task(void *); the existing
+     `#include <net80211/ieee80211_var.h>` pulls node.h and proto.h so
+     no extra includes are required.
+
+  B) sys/net80211/ieee80211_node.c
+     ieee80211_node_detach() frees ic_bss directly via ic_node_free
+     (around line 798) without going through
+     ieee80211_free_node()/ieee80211_node_cleanup(). Add an
+     ieee80211_ba_del(ic->ic_bss) one line above the free so armed BA
+     timers are cancelled before the node is gone. Belt-and-braces:
+     covers any direct-detach path (e.g. device removal) where the
+     driver did not pre-empty the BA state.
+
+Target: sys/dev/sdmmc/if_bwfm_sdio.c + sys/net80211/ieee80211_node.c
+        (combined with dwmmc-resume-full-cycle.diff /
+         dwmmc-resume-pwrseq.diff and bwfm-sdio-resume-guard.diff).
+
+NOTE: v2 built clean (clang-22 cross-build, armv7 GENERIC, ELF 32-bit
+ARM) and llvm-nm-22 confirmed the bwfm_sdio_activate symbol, but
+suspend/resume validation on the actual device was NOT completed. See
+the harness/ tree for the persistent-log methodology used to chase the
+later "WiFi never re-attaches" failure that motivated
+dwmmc-resume-full-cycle.diff. Build-environment caveat: stale
+root-owned .o files in obj/ (left over from a previous `doas`-driven
+build) cause clang-22 to fail with "Operation not permitted"; chown the
+obj/ tree back to the build user before re-running make.
+
+CAUTION:
+  v1 HUNG suspend (see history above); v3 is the firmware-I/O-free
+  variant. Residual uncertainty in v3:
+    - ieee80211_free_allnodes(ic, 0) deliberately preserves ic_bss
+      (no cleanup). If another path holds ic_bss outside of ic->ic_bss
+      during the suspend window there is room for a stale reference;
+      currently none observed (node_detach in (B) ba_dels before free,
+      so double-safe).
+    - The direct ic_state = S_INIT assignment skips the ic_newstate
+      callback. S_INIT -> S_INIT is a no-op in bwfm_newstate (scan_abort
+      runs only for S_SCAN), so safe.
+    - If sdmmc's force-detach were to run BEFORE QUIESCE this patch
+      would be a no-op. sleep_state() runs QUIESCE then SUSPEND and
+      sc_dying=-1 is set in SUSPEND, so QUIESCE should always come
+      first; verify on the device by checking that "detached" prints
+      AFTER the QUIESCE marker (use diag-suspend-verbose.diff +
+      bwfm-attach-diag.diff for confirmation).
+
+=== File A: sys/dev/sdmmc/if_bwfm_sdio.c ===
+--- sys/dev/sdmmc/if_bwfm_sdio.c.orig
++++ sys/dev/sdmmc/if_bwfm_sdio.c
+@@ forward decls (near void bwfm_sdio_task(void *);) @@
+ void		 bwfm_sdio_task(void *);
++int		 bwfm_sdio_activate(struct device *, int);
+
+@@ const struct cfattach bwfm_sdio_ca = { @@
+ const struct cfattach bwfm_sdio_ca = {
+ 	sizeof(struct bwfm_sdio_softc),
+ 	bwfm_sdio_match,
+ 	bwfm_sdio_attach,
+ 	bwfm_sdio_detach,
++	bwfm_sdio_activate,
+ };
+
+@@ after bwfm_sdio_detach() (new function) @@
+ 	dma_free(sc->sc_bounce_buf, sc->sc_bounce_size);
+ 	free(sc->sc_sf, M_DEVBUF, 0);
+
+ 	return 0;
+ }
++
++/*
++ * Suspend/resume.  Without a ca_activate, DVACT_QUIESCE/SUSPEND never reach
++ * bwfm and net80211 is left in S_RUN with live BA timeouts and an ic_bss that
++ * the suspend-driven sdmmc card detach then frees via ic_node_free WITHOUT
++ * ieee80211_ba_del() (see ieee80211_node_detach()).  On resume the stale
++ * ic_bss / armed BA timers fault (bwfm_update_node NULL deref from ifconfig,
++ * ieee80211_ba_del bad pointer).
++ *
++ * v1 brought the stack down on DVACT_QUIESCE via bwfm_activate() -> bwfm_stop(),
++ * but bwfm_stop() issues synchronous firmware commands (BWFM_C_SET_SSID /
++ * BWFM_C_DOWN / BWFM_C_SET_AP / BWFM_C_SET_INFRA / BWFM_C_UP / BWFM_C_SET_PM /
++ * "mpc") through bwfm_fwvar_cmd_set_* -> bwfm_proto_bcdc_txctl -> bs_txctl ->
++ * SDIO I/O, plus bs_stop().  By the time DVACT_QUIESCE runs the chip is being
++ * powered down and no longer answers; each fwvar tsleep_nsec() times out and
++ * the suspend HANGS.
++ *
++ * v3: tear the net80211 stack down here WITHOUT touching the chip.  Cancel the
++ * armed BA timeouts, free the cached node tree, drop ic_state to S_INIT by
++ * direct assignment (so the ic_newstate / bwfm_newstate -> bwfm_stop firmware
++ * path is never entered) and clear the interface up/running flags.  ic_bss is
++ * intentionally left allocated (ieee80211_free_allnodes(ic, 0)) so its BA
++ * arrays survive; the suspend-driven detach later frees it through
++ * ieee80211_node_detach(), which now cancels its BA timers first (see the
++ * ieee80211_ba_del(ic->ic_bss) addition there).  No firmware I/O means nothing
++ * stale and no tsleep timeout -> no hang.
++ */
++int
++bwfm_sdio_activate(struct device *self, int act)
++{
++	struct bwfm_sdio_softc *sc = (struct bwfm_sdio_softc *)self;
++	struct bwfm_softc *bwfm = (void *)sc;
++	struct ieee80211com *ic = &bwfm->sc_ic;
++	struct ifnet *ifp = &ic->ic_if;
++
++	switch (act) {
++	case DVACT_QUIESCE:
++		/*
++		 * net80211 stack down with zero chip/SDIO I/O.  Do NOT call
++		 * bwfm_activate()/bwfm_stop(): those talk to firmware over a
++		 * chip that is already going away and would hang on timeout.
++		 */
++		if (ifp->if_flags & IFF_UP) {
++			int s = splnet();
++			/* Cancel armed BA timeouts on the bss node. */
++			if (ic->ic_bss != NULL)
++				ieee80211_ba_del(ic->ic_bss);
++			/* Free cached tree nodes; keep ic_bss (arg 0). */
++			ieee80211_free_allnodes(ic, 0);
++			/*
++			 * Drop to S_INIT directly so the ic_newstate ->
++			 * bwfm_newstate firmware path is never entered.
++			 */
++			ic->ic_state = IEEE80211_S_INIT;
++			ieee80211_set_link_state(ic, LINK_STATE_DOWN);
++			ifp->if_flags &= ~(IFF_UP | IFF_RUNNING);
++			ifq_clr_oactive(&ifp->if_snd);
++			splx(s);
++		}
++		break;
++	case DVACT_WAKEUP:
++		/*
++		 * The card was force-detached on suspend and is re-attached by
++		 * sdmmc on resume; bwfm_attachhook() re-inits the chip and
++		 * rebuilds ic_bss.  Because the QUIESCE path issued no firmware
++		 * I/O and left no stale pointers, and the bwfm_ioctl()
++		 * SIOCG80211NODE guard only walks nodes when ic_state ==
++		 * IEEE80211_S_RUN, there is nothing to do here.  Re-association
++		 * happens through the normal bwfm_init() path.
++		 */
++		break;
++	default:
++		break;
++	}
++
++	return 0;
++}
+
+=== File B: sys/net80211/ieee80211_node.c ===  (unchanged across v1..v3)
+--- sys/net80211/ieee80211_node.c.orig
++++ sys/net80211/ieee80211_node.c
+@@ ieee80211_node_detach(struct ifnet *ifp) @@
+ 	if (ic->ic_bss != NULL) {
++		/*
++		 * Cancel any armed BA timeouts on the bss node before it is
++		 * freed here; this direct ic_node_free path does not go through
++		 * ieee80211_free_node()/ieee80211_node_cleanup() and would
++		 * otherwise leak armed BA timers into a freed node (stale
++		 * timeout faults after suspend-driven detach).
++		 */
++		ieee80211_ba_del(ic->ic_bss);
+ 		(*ic->ic_node_free)(ic, ic->ic_bss);
+ 		ic->ic_bss = NULL;
+ 	}
+
+Notes:
+  - v3 does NOT call bwfm_activate() (ic/bwfm.c around 369-) from the
+    SDIO path. The DVACT_QUIESCE -> bwfm_stop firmware I/O was the
+    cause of the v1 hang. bwfm_activate is left in place because
+    if_bwfm_pci.c still uses it.
+  - ieee80211_free_allnodes(ic, clear_ic_bss) clears ic_bss only when
+    the second arg is non-zero; this patch passes 0 so the BA arrays
+    on ic_bss are preserved for the resume re-init.
+  - ieee80211_ba_del() is declared in ieee80211_node.h around line 662
+    and defined in ieee80211_node.c around line 2109. The call only
+    runs inside `if (ic->ic_bss != NULL)`, so no NULL deref.
+  - ieee80211_set_link_state() is declared in ieee80211_proto.h
+    (around line 67) and defined in proto.c (around line 1435).
+  - bwfm_ioctl() (ic/bwfm.c around 842-846) gates SIOCG80211NODE /
+    SIOCG80211ALLNODES on ic_state == IEEE80211_S_RUN. v3 lands
+    ic_state at S_INIT through QUIESCE; resume stays S_INIT until
+    bwfm_init() drives the state machine back to RUN, so fault (1)
+    (bwfm_update_node NULL deref) does not fire. bwfm.c is unchanged.
+  - bwfm-sdio-resume-guard.diff's sc_task NULL guard + taskq_barrier
+    is independent of this teardown and stays in the stack.

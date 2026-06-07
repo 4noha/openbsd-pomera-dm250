@@ -1,0 +1,192 @@
+From: 4noha
+Subject: subr_suspend / subr_autoconf: noisy phase + per-device markers (diagnostic only)
+License: ISC (this patch modifies OpenBSD source and inherits ISC; see ../LICENSE-ISC)
+
+diag-suspend-verbose.diff
+=========================
+
+Diagnostic-only kernel patch for OpenBSD/armv7 (jcs/openbsd-src rk3128)
+used to localize the DM250 "intermittent suspend hang" symptom — no
+panic, no ddb trace, just a frozen console. The patch instruments two
+layers:
+
+  1. kern/subr_suspend.c::sleep_state()
+     - "susp: phase QUIESCE  start/end"
+     - "susp: phase SUSPEND  start/end"
+     - "susp: phase POWERDOWN start/end"
+     - "susp: gosleep (CPU halt) ..." / "susp: gosleep returned, ..."
+     - "susp: phase RESUME   start/end"
+     - "susp: phase WAKEUP   start/end"
+     - "susp: suspend_finish"
+     Failure paths (EIO / EDEADLK) also emit a "failed" line before the
+     goto.
+
+  2. kern/subr_autoconf.c::config_suspend()
+     Immediately BEFORE each (*ca->ca_activate)() call, emits:
+         "susp: <ACT> <devname>\n"
+     switch()-gated to DVACT_QUIESCE / SUSPEND / RESUME / WAKEUP /
+     POWERDOWN only, so normal DVACT_DEACTIVATE ticks stay silent.
+
+How to read the output
+----------------------
+
+On a successful suspend/resume the console shows the full pipeline:
+    susp: phase QUIESCE start
+    susp: QUIESCE wsdisplay0
+    susp: QUIESCE bwfm0
+    ...
+    susp: phase QUIESCE end
+    susp: phase SUSPEND start
+    ...
+    susp: gosleep (CPU halt) ...
+    susp: gosleep returned, beginning resume
+    susp: phase RESUME start
+    susp: RESUME ...
+    ...
+    susp: suspend_finish
+
+On a hang, the LAST line on the framebuffer identifies either
+  - the phase the suspend reached (printf is emitted BEFORE
+    config_suspend_all is called), or
+  - the specific device whose ca_activate is currently spinning or
+    deadlocked (printf is emitted BEFORE (*ca->ca_activate)() is
+    called).
+
+Take a photo of the screen at hang time — the last "susp:" line names
+the suspect.
+
+Limitations / caveats
+---------------------
+
+- printf() goes through wsdisplay (framebuffer). Once wsdisplay itself
+  is QUIESCE'd, subsequent "susp:" lines may not actually paint. The
+  last visible line on the framebuffer should still be either the
+  wsdisplay QUIESCE marker or an in-flight device just before it.
+- If a hang happens deep in DVACT_SUSPEND where interrupts are already
+  off (intr_disable() has run by then) and a driver spin-locks the SoC
+  bus, framebuffer DMA may be quiesced and the very last printf can be
+  lost in the console buffer that never gets pushed. Treat the last
+  visible line as "the suspect or one step before the suspect".
+- This patch is intentionally noisy. NOT for production: every
+  suspend/resume cycle prints ~50-100 lines to the console. Swap it in
+  to chase a hang, take the photo, swap it back out.
+
+Build / deploy
+--------------
+
+This diff stacks on top of the rest of the rk3128 patch set
+(dwmmc-resume-pwrseq / dwmmc-resume-full-cycle, bcmbt-delay-2s,
+bus_space_notimpl-align-clang22, bwfm-sdio-resume-guard,
+bwfm-suspend-down v3, ieee80211-media-status-nullguard, ...). Apply
+with `patch -p0` from /usr/src and rebuild GENERIC; see
+docs/cross-build.md.
+
+After collecting diagnostics, back it out with:
+    patch -p0 -R < diag-suspend-verbose.diff
+
+--- sys/kern/subr_suspend.c.orig
++++ sys/kern/subr_suspend.c
+@@ -94,10 +94,13 @@
+ #endif /* HIBERNATE */
+
+ 	sensor_quiesce();
++	printf("susp: phase QUIESCE start\n");
+ 	if (config_suspend_all(DVACT_QUIESCE)) {
++		printf("susp: phase QUIESCE failed (EIO)\n");
+ 		error = EIO;
+ 		goto fail_quiesce;
+ 	}
++	printf("susp: phase QUIESCE end\n");
+
+ 	vfs_stall(curproc, 1);
+ #if NSOFTRAID > 0
+@@ -135,10 +138,13 @@
+ 	cold = 2;	/* Force other code to delay() instead of tsleep() */
+ 	intr_enable_wakeup();
+
++	printf("susp: phase SUSPEND start\n");
+ 	if (config_suspend_all(DVACT_SUSPEND) != 0) {
++		printf("susp: phase SUSPEND failed (EDEADLK)\n");
+ 		error = EDEADLK;
+ 		goto fail_suspend;
+ 	}
++	printf("susp: phase SUSPEND end\n");
+ 	suspend_randomness();
+ 	if (sleep_setstate(v)) {
+ 		error = ENOTBLK;
+@@ -152,14 +158,18 @@
+ 		 * when we get to DVACT_POWERDOWN.
+ 		 */
+ 		boothowto |= RB_POWERDOWN;
++		printf("susp: phase POWERDOWN start\n");
+ 		config_suspend_all(DVACT_POWERDOWN);
++		printf("susp: phase POWERDOWN end\n");
+ 		boothowto &= ~RB_POWERDOWN;
+
+ 		if (cpu_setperf != NULL)
+ 			cpu_setperf(0);
+ 	}
+
++	printf("susp: gosleep (CPU halt) ...\n");
+ 	error = gosleep(v);
++	printf("susp: gosleep returned, beginning resume\n");
+
+ #ifdef HIBERNATE
+ 	if (sleepmode == SLEEP_HIBERNATE) {
+@@ -169,7 +179,9 @@
+ #endif /* HIBERNATE */
+
+ fail_pts:
++	printf("susp: phase RESUME start\n");
+ 	config_suspend_all(DVACT_RESUME);
++	printf("susp: phase RESUME end\n");
+
+ fail_suspend:
+ 	intr_disable_wakeup();
+@@ -198,7 +210,9 @@
+ 	bufq_restart();
+
+ fail_quiesce:
++	printf("susp: phase WAKEUP start\n");
+ 	config_suspend_all(DVACT_WAKEUP);
++	printf("susp: phase WAKEUP end\n");
+ 	sensor_restart();
+
+ #ifdef HIBERNATE
+@@ -216,6 +230,7 @@
+ 	sys_sync(curproc, NULL, NULL);
+ 	if (cpu_setperf != NULL)
+ 		cpu_setperf(perflevel);	/* Restore hw.setperf */
++	printf("susp: suspend_finish\n");
+ 	sleepmode = suspend_finish(v);
+ 	if (sleepmode != SLEEP_RESUME)
+ 		goto top;
+--- sys/kern/subr_autoconf.c.orig
++++ sys/kern/subr_autoconf.c
+@@ -828,7 +828,26 @@
+ {
+ 	const struct cfattach *ca = dev->dv_cfdata->cf_attach;
+ 	int r;
++	const char *actname;
+
++	/*
++	 * Diagnostic: print "susp: <ACT> <devname>" immediately BEFORE the
++	 * device's activate hook runs, so a suspend hang inside a driver
++	 * leaves the suspect device name as the last line on the console.
++	 * Gated to suspend/resume-class actions only (no spam from normal
++	 * DEACTIVATE tick paths).
++	 */
++	switch (act) {
++	case DVACT_QUIESCE:	actname = "QUIESCE";	break;
++	case DVACT_SUSPEND:	actname = "SUSPEND";	break;
++	case DVACT_RESUME:	actname = "RESUME";	break;
++	case DVACT_WAKEUP:	actname = "WAKEUP";	break;
++	case DVACT_POWERDOWN:	actname = "POWERDOWN";	break;
++	default:		actname = NULL;		break;
++	}
++	if (actname != NULL)
++		printf("susp: %s %s\n", actname, dev->dv_xname);
++
+ 	device_ref(dev);
+ 	if (ca->ca_activate)
+ 		r = (*ca->ca_activate)(dev, act);

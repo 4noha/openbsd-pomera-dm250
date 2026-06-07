@@ -1,0 +1,76 @@
+From: 4noha
+Subject: net80211: guard ieee80211_media_status() against NULL ic_bss on resume
+License: ISC (this patch modifies OpenBSD source and inherits ISC; see ../LICENSE-ISC)
+
+net80211: guard ieee80211_media_status() against NULL ic_bss on resume.
+
+Problem (2026-06-03..05, DM250 / rk3128, jcs fork):
+  Across suspend -> resume with WiFi up, the bwfm detach -> re-attach
+  window can leave the net80211 bss node (ic->ic_bss) NULL for a brief
+  moment. If netwatchd / ifconfig issues a SIOCGIFMEDIA in that window
+  the ifmedia_ioctl() -> ieee80211_media_status() chain dereferences
+  ic_bss without guarding and the kernel takes a fatal data abort
+  (Translation fault L1).
+
+  Confirmed on the device by ddb + addr2line:
+    pc       = ieee80211_media_status
+    return   = ifmedia_ioctl
+
+  This is the "next layer" after the earlier resume-crash fixes
+  (dwmmc-resume-pwrseq + bwfm-sdio-resume-guard +
+  ieee80211_node_detach ba_del). Those eliminated the SDIO error 60,
+  the sc_task softc NULL deref, and the armed-BA-on-detach leak — but
+  the resume-time ioctl -> media_status NULL deref is not covered by
+  any of them and fires here.
+
+  In jcs rk3128, ieee80211_media_status() (around line 787-) has two
+  unguarded ic_bss derefs:
+    1. The S_RUN condition `ic->ic_bss->ni_port_valid` — if S_RUN +
+       M_STA + RSNON with ic_bss == NULL, crash.
+    2. case IEEE80211_M_STA: `ni = ic->ic_bss;` immediately followed
+       by ni->ni_txmcs / ni->ni_flags / ni->ni_rates.rs_rates[...]
+       derefs with no ni == NULL check. This is the line that crashed.
+
+Fix (defensive, minimal):
+  1. Guard the S_RUN condition: `ic->ic_bss != NULL &&
+     ic->ic_bss->ni_port_valid`. In the NULL window IFM_ACTIVE is not
+     set (link reported inactive) which is fine for the brief resume
+     transient.
+  2. After `ni = ic->ic_bss;` insert `if (ni == NULL) break;` so the
+     subsequent ni-> derefs are never reached. With ic_bss == NULL the
+     function returns IFM_AVALID-only media (no ACTIVE / rate subtype;
+     IFM_AUTO and the trailing ic_curmode 11A/B/G/N/AC/AX flags still
+     apply).
+
+  The other cases (IBSS / AHDEMO / HOSTAP / MONITOR) and the
+  ic_curmode switch do not touch ic_bss / ni, so no extra guarding is
+  needed.
+
+Target: sys/net80211/ieee80211.c::ieee80211_media_status()
+
+CAUTION: this patch only stops the resume from CRASHING in
+ieee80211_media_status(). It is NOT a root-cause fix for the
+"WiFi survives lid close" goal; the suspend tear-down (see
+bwfm-suspend-down.diff v3) plus the dwmmc full power cycle (see
+dwmmc-resume-full-cycle.diff) carry that responsibility. This patch is
+documentary for the v3 stack — keep applied as a belt-and-braces
+guard.
+
+--- sys/net80211/ieee80211.c.orig
++++ sys/net80211/ieee80211.c
+@@ -794,12 +794,14 @@ ieee80211_media_status(struct ifnet *ifp, struct ifmediareq *imr)
+ 	if (ic->ic_state == IEEE80211_S_RUN &&
+ 	    (ic->ic_opmode != IEEE80211_M_STA ||
+ 	     !(ic->ic_flags & IEEE80211_F_RSNON) ||
+-	     ic->ic_bss->ni_port_valid))
++	     (ic->ic_bss != NULL && ic->ic_bss->ni_port_valid)))
+ 		imr->ifm_status |= IFM_ACTIVE;
+ 	imr->ifm_active |= IFM_AUTO;
+ 	switch (ic->ic_opmode) {
+ 	case IEEE80211_M_STA:
+ 		ni = ic->ic_bss;
++		if (ni == NULL)	/* resume/detach race: no bss yet */
++			break;
+ 		if (ic->ic_curmode == IEEE80211_MODE_11N ||
+ 		    ic->ic_curmode == IEEE80211_MODE_11AC ||
+ 		    ic->ic_curmode == IEEE80211_MODE_11AX)

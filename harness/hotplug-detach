@@ -1,0 +1,22 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 4noha
+#
+# /etc/hotplug/detach — sd[0-9] が detach されたら /mnt/sd を強制 umount。
+DEVCLASS=$1
+DEVNAME=$2
+
+[ "$DEVCLASS" = 2 ] || exit 0
+
+case "$DEVNAME" in
+sd[0-9])
+    # detach 時点で disklabel は読めないので、 mount 状態を見て /mnt/sd の device を確認
+    if mount | grep -qE "^/dev/${DEVNAME}a on /mnt/sd "; then
+        if umount -f /mnt/sd >/dev/null 2>&1; then
+            logger -t hotplug "detach $DEVNAME -> umounted /mnt/sd"
+        else
+            logger -t hotplug "detach $DEVNAME but umount /mnt/sd failed"
+        fi
+    fi
+    ;;
+esac

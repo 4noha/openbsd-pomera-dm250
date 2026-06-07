@@ -1,0 +1,15 @@
+v0.3.0 (versionCode 4) — pomera ACL_CONNECTED で MuxServer 自動起動
+
+- 新規 `BtConnectReceiver`: `android.bluetooth.device.action.ACL_CONNECTED`
+  ブロードキャストで `RfcommService` を foreground service として自動起動。
+  pomera 側 panctl からの BT 接続が来た瞬間に MuxServer が listen 開始する。
+  これまで初回起動は手で MainActivity 立ち上げる必要があったが、
+  pomera 開いた瞬間→数秒で internet 開通、 のフローが成立する
+- AndroidManifest に上記 receiver を `exported=true` で登録。
+  ACL_CONNECTED は Android 8+ implicit-broadcast 例外なので manifest 登録
+  だけで動く (常駐プロセス不要)
+- `Prefs.listenerEnabled` (UI の master toggle) で受信ゲート。 BT speaker
+  等の誤発火を防ぐ
+
+これにより panctl + Tailscale の自動運用が完成。 pomera 電源 ON → 数十秒で
+home Mac に SSH attach できる thin-client モードに到達。

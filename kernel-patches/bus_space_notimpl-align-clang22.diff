@@ -1,0 +1,42 @@
+From: 4noha
+Subject: bus_space_notimpl.S: 4-byte align panic strings (clang-22 cross-build prereq)
+License: ISC (this patch modifies OpenBSD source and inherits ISC; see ../LICENSE-ISC)
+
+bus_space_notimpl.S: 4-byte align panic strings (clang-22 cross-build
+prerequisite).
+
+This is NOT a functional fix: it is the prerequisite for cross-building
+armv7 GENERIC on an arm64 OpenBSD build VM using the pkg clang-22
+toolchain. Native builds with the OpenBSD base clang (19) on the DM250
+itself do not need this (the bcmbt-only kernel built fine with base
+clang on the device).
+
+Problem:
+  On the build VM with ~/bin/cc = clang-22 (-target arm-unknown-openbsd7.9)
+  building GENERIC, bus_space_notimpl.o fails to assemble:
+    /tmp/bus_space_notimpl-XXXX.s: error: Relocation not aligned
+      adr r4, Lbs_notimpl_bs_X_text ; ... .asciz "X" ; .align 0 ;
+  The NOT_IMPL macro emits an odd-length .asciz followed by `.align 0`
+  (no alignment). The next stub function therefore starts on an unaligned
+  address, the `adr` target (the string label) becomes unaligned, and
+  clang-22's stricter integrated-as rejects the adr relocation.
+
+Fix:
+  Change `.align 0` to `.align 2` (4-byte) at the end of the NOT_IMPL
+  macro so each stub is aligned. Adds a tiny amount of padding; harmless
+  otherwise.
+
+Target: sys/arch/arm/arm/bus_space_notimpl.S NOT_IMPL macro.
+
+--- sys/arch/arm/arm/bus_space_notimpl.S.orig
++++ sys/arch/arm/arm/bus_space_notimpl.S
+@@ NOT_IMPL macro tail @@
+ 	adr	r4, LNAME(__C(func,_text))			;	\
+ 	b	bs_notimpl_panic				;	\
+ 	LLABEL(__C(func,_text))					;	\
+ 	.asciz	__S(func)					;	\
+-	.align	0						;
++	.align	2						;
+
+Verification: bus_space_notimpl.S assembles standalone with clang-22
+(ELF 32-bit ARM output).

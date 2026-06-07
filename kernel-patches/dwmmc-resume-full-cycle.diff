@@ -1,0 +1,126 @@
+From: 4noha
+Subject: dwmmc: replace partial pwrseq with full power cycle on DVACT_RESUME
+License: ISC (this patch modifies OpenBSD source and inherits ISC; see ../LICENSE-ISC)
+
+dwmmc: replace partial pwrseq with full power cycle on DVACT_RESUME.
+
+Problem (2026-06-05, DM250 / rk3128):
+  After resume, bwfm0 (WiFi) never re-attaches even when the host
+  kernel completes suspend/resume cleanly (no crash, no error 60). The
+  persistent harness log from the v3-diag kernel showed the exact
+  failure point via numbered printfs in if_bwfm_sdio.c (see
+  bwfm-attach-diag.diff):
+
+    BWFMD A1 activate DVACT_QUIESCE if_flags=0x8843 ic_state=4
+    BWFMD A2 activate DVACT_WAKEUP
+    BWFMD D1 detach entry flags=1
+    BWFMD 01 match entry        <- only ONCE; at boot it fires twice
+                                    (function 1 + function 2)
+    <no BWFMD 10 attach entry>
+
+  bwfm_sdio_match (if_bwfm_sdio.c) rejects the re-attach because
+  sf->sc->sc_function_count == 1 — the chip reported only ONE SDIO
+  function via CMD5 instead of the expected two.
+
+Root cause:
+  dwmmc-resume-pwrseq.diff fixed the original error 60 (chip totally
+  unresponsive after resume) by explicitly calling dwmmc_pwrseq_pre /
+  post from DVACT_RESUME. But pwrseq alone only toggles the WL_REG_ON
+  / reset-gpios line; it does NOT cycle the vmmc regulator. Meanwhile
+  dwmmc_bus_power() — the only path that performs both the regulator
+  enable AND the pwrseq pre/post pair that a cold boot uses — gates
+  its work on sc_vdd transitioning from 0 to >0, and sc_vdd still
+  holds the pre-suspend voltage after resume. When the sdmmc layer's
+  force-detach + re-discover path calls bus_power(3.3V) it sees vdd
+  unchanged, skips both the regulator cycle and the pwrseq, and leaves
+  the chip in the partial state that pwrseq alone produced.
+
+  In that partial state AP6212A responds to CMD5 with only 1 SDIO
+  function (function 1, WLAN) instead of 2 (WLAN + BT mailbox).
+  sdmmc_io_scan() allocates a single sdmmc_function entry,
+  bwfm_sdio_match returns 0 at
+      if (sf->sc->sc_function_count <= 1) return 0;
+  and bwfm_sdio_attach is never called — bwfm0 ifnet is gone for the
+  rest of the boot.
+
+Fix:
+  Stop calling pwrseq explicitly from DVACT_RESUME. Instead, drop the
+  vmmc regulator refcount and zero sc_vdd so the next bus_power() call
+  from sdmmc_card_attach() -> sdmmc_enable() sees a real "0 -> 3.3V"
+  transition and runs the full
+      regulator_enable + pwrseq_pre + pwrseq_post
+  sequence that cold boot uses. The chip then re-enumerates both SDIO
+  functions correctly and bwfm_sdio_match accepts the re-attach.
+
+  This subsumes dwmmc-resume-pwrseq.diff (the prior step): the new path
+  runs pwrseq via the same code that cold boot exercises, so we get
+  pwrseq AND the regulator cycle pwrseq alone was missing.
+
+Target: sys/dev/fdt/dwmmc.c::dwmmc_activate()
+Depends: bwfm_sdio_activate (bwfm-suspend-down.diff v3) takes net80211
+  down on QUIESCE, so the in-flight detach during resume is safe.
+Supersedes: dwmmc-resume-pwrseq.diff (rolled into this patch).
+
+--- sys/dev/fdt/dwmmc.c.orig
++++ sys/dev/fdt/dwmmc.c
+@@ dwmmc_activate(struct device *self, int act) @@
+ 	switch (act) {
+ 	case DVACT_RESUME:
+ 		/* dwmmc_host_reset will clobber these */
+ 		bus_width = sc->sc_bus_width;
+ 		bus_freq = sc->sc_bus_freq;
+ 		bus_timing = sc->sc_bus_timing;
+
+ 		clock_enable_all(sc->sc_node);
+ 		reset_deassert_all(sc->sc_node);
+-		if (sc->sc_pwrseq) {
+-			dwmmc_pwrseq_pre(sc->sc_pwrseq);
+-			dwmmc_pwrseq_post(sc->sc_pwrseq);
+-		}
++
++		/*
++		 * Force a full boot-style power cycle on the SDIO card so it
++		 * re-enumerates all functions correctly after resume. Dropping
++		 * the regulator refcount and zeroing sc_vdd makes the next
++		 * dwmmc_bus_power() (called from the sdmmc re-discover path
++		 * after the force-detach) see a 0 -> on transition, which is
++		 * the only path that runs both regulator_enable AND pwrseq
++		 * pre/post. Without this, calling pwrseq alone here brings the
++		 * chip up only partially: SDIO CMD5 then reports a single
++		 * function on AP6212A and bwfm_sdio_match() rejects the
++		 * re-attach because it requires sc_function_count > 1.
++		 *
++		 * Replaces the explicit pwrseq from dwmmc-resume-pwrseq.diff
++		 * (which only solved error 60 but introduced this partial-init
++		 * problem). The re-attach path now exercises the same code as
++		 * cold boot.
++		 */
++		if (sc->sc_vdd > 0 && sc->sc_vmmc)
++			regulator_disable(sc->sc_vmmc);
++		sc->sc_vdd = 0;
++
+ 		dwmmc_host_reset(sc);
+
+ 		if (bus_width)
+ 			dwmmc_bus_width(sc, bus_width);
+ 		if (bus_freq)
+ 			dwmmc_bus_clock(sc, bus_freq, bus_timing);
+ 		break;
+ 	}
+
+ 	return config_activate_children(self, act);
+
+Notes:
+  - sc->sc_vmmc is 0 when no vmmc-supply is in DT. The regulator_disable
+    call is skipped (guarded above); sc_vdd = 0 still triggers
+    bus_power to run pwrseq_pre/post on the next attach, which is the
+    minimum behaviour the original error-60 fix delivered.
+  - On boards that mark the bus non-removable (SMC_CAPS_NONREMOVABLE),
+    the sdmmc layer will not force-detach on suspend and therefore
+    will not call bus_power on resume; for those boards an explicit
+    pwrseq call would still be needed. DM250 doesn't take that path
+    (dwmmc.c does not honour DT non-removable today), so the current
+    setup is consistent.
+  - The retained dwmmc_pwrseq_pre / post functions (around lines
+    1310-1380 of dwmmc.c) are unchanged; they continue to be invoked
+    from dwmmc_bus_power on every 0 -> on vdd transition.

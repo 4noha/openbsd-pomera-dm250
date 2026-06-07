@@ -1,0 +1,186 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 4noha
+#
+# Release pipeline for openbsd-pomera-dm250.
+#
+# This workflow does NOT cross-build the kernel or mozc itself; those
+# artifacts are produced by hand in the qemu HVF VM described in
+# `docs/build-vm.md` and uploaded by the maintainer. What this workflow
+# does is:
+#
+#   1. Lint shell / python / yaml on every push and PR.
+#   2. Grep for the redacted-string redflags listed in
+#      `CONTRIBUTING.md` so that no private placeholder slips back in.
+#   3. On a pushed tag (`v*` or `armv7-artifacts-v*`), publish a GitHub
+#      Release whose body is taken from `prebuilt-info/manifest.md`
+#      and whose assets are uploaded out of band with `gh release
+#      upload` (so the workflow only creates the release shell, it
+#      does not try to recreate multi-GB binaries from CI).
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+      - 'armv7-artifacts-v*'
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install linters
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y shellcheck yamllint python3-pip
+          pip3 install --user ruff
+
+      - name: shellcheck
+        run: |
+          set -eu
+          find install panctl harness battery logo tailscale-optional docs \
+            -type f \( -name '*.sh' -o -name '*.ksh' \) -print0 2>/dev/null \
+            | xargs -0 -r shellcheck -S warning
+
+      - name: yamllint
+        run: |
+          set -eu
+          yamllint -d '{extends: default, rules: {line-length: {max: 120}}}' \
+            .github/
+
+      - name: ruff
+        run: |
+          set -eu
+          if find install panctl harness battery logo tailscale-optional docs \
+               -type f -name '*.py' -print -quit 2>/dev/null | grep -q .; then
+            "$HOME/.local/bin/ruff" check install panctl harness battery \
+              logo tailscale-optional docs
+          else
+            echo 'no python files to lint'
+          fi
+
+  redflag-grep:
+    name: redflag-grep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Scan for private strings
+        run: |
+          set -eu
+          # These patterns must NEVER appear in a public revision of
+          # this repository. See sanitize.grep_redflags in the design
+          # doc and the matching placeholder list in CONTRIBUTING.md.
+          patterns=(
+            'tail113163'
+            '100\.126\.6\.107'
+            '100\.123\.113\.96'
+            '4nopomera'
+            'mac-studio'
+            '\bshinoha\b'
+            'nokkii'
+            '192\.168\.0\.20'
+            '192\.168\.0\.1'
+            '9c:b8:b4:f2'
+            'TP-Link_2B0C'
+            '40:ae:30:bb'
+            '/Users/4noha'
+            '/home/shinoha'
+            # Three consecutive OCV-shaped tokens 36xx-39xx — catches any
+            # leftover factory OCV table that escaped the placeholder
+            # (see battery/README.md and harness/netwatchd.sh policy).
+            '\b3[6-9][0-9]{2} 3[6-9][0-9]{2} 3[6-9][0-9]{2}\b'
+          )
+          fail=0
+          for p in "${patterns[@]}"; do
+            if grep -rIEn --exclude-dir=.git --exclude=CHANGELOG.md \
+                 --exclude='release.yml' "$p" .; then
+              echo "::error::redflag pattern matched: $p"
+              fail=1
+            fi
+          done
+
+          # Generic MAC heuristic: any [0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}
+          # is treated as a leak unless it appears on the allow-list of
+          # known placeholders / smoke-test values.  This catches
+          # arbitrary real BD_ADDRs (e.g. a Pixel C0:xx:xx:xx:xx:xx)
+          # that the hard-coded list above would have missed.
+          mac_re='([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}'
+          mac_allow='^(aa:aa:aa:aa:aa:aa|AA:BB:CC:DD:EE:FF|DE:AD:BE:EF:00:01|XX:XX:XX:XX:XX:XX|ff:ff:ff:ff:ff:ff|00:00:00:00:00:00)$'
+          mac_hits=$(grep -rIEho --exclude-dir=.git --exclude=CHANGELOG.md \
+                       --exclude='release.yml' "$mac_re" . | sort -u || true)
+          for m in $mac_hits; do
+            if ! echo "$m" | grep -qiE "$mac_allow"; then
+              echo "::error::unrecognised MAC-shaped string: $m"
+              grep -rIEn --exclude-dir=.git --exclude=CHANGELOG.md \
+                   --exclude='release.yml' "$m" . || true
+              fail=1
+            fi
+          done
+
+          # Fail the release if any unresolved SPDX-header placeholder
+          # remains in copyright headers — once the maintainer has fixed
+          # this for a public tag it must not regress.  The literal
+          # search string below is split so this very file does not
+          # match itself when grep runs.
+          ph='<your''-mac-user>'
+          if grep -rIEn --exclude-dir=.git --exclude=CHANGELOG.md \
+               --exclude='release.yml' "$ph" .; then
+            echo "::error::unresolved SPDX placeholder ($ph)"
+            fail=1
+          fi
+
+          exit "$fail"
+
+  release:
+    name: release
+    needs: [lint, redflag-grep]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Build release body
+        id: body
+        run: |
+          set -eu
+          {
+            echo "## $GITHUB_REF_NAME"
+            echo
+            if [ -f prebuilt-info/manifest.md ]; then
+              cat prebuilt-info/manifest.md
+            else
+              echo 'No prebuilt-info/manifest.md found.'
+              echo 'This release contains source / docs only.'
+            fi
+            echo
+            echo '---'
+            echo
+            echo 'See [CHANGELOG.md](CHANGELOG.md) for the full diff.'
+          } > release-body.md
+          {
+            echo 'path=release-body.md'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: ${{ steps.body.outputs.path }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

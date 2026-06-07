@@ -1,0 +1,50 @@
+/*
+ * (Verbatim ISC license template — text below is reproduced unchanged
+ *  from OpenBSD share/misc/license.template.  Per-file copyright
+ *  holders are recorded in each patched file's own header.)
+ *
+ * Copyright (c) <year> <copyright holders>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+------------------------------------------------------------------------------
+
+This LICENSE-ISC file applies to kernel patches under `kernel-patches/`.
+
+These patches modify source files in the OpenBSD source tree (the
+`openbsd-src` repository, mirrored at https://github.com/openbsd/src and
+augmented by jcs's rk3128 branch at https://github.com/jcs/openbsd-src).
+OpenBSD source code is distributed under the ISC license shown above (and
+in some files, the historical BSD 3-clause or BSD 2-clause variants).
+
+Modified or newly-added source files under `kernel-patches/` inherit the
+license of the file they patch. When in doubt, treat them as ISC.
+
+Each `*.patch` file in this repository carries a header noting:
+
+    License: ISC (inherits from OpenBSD upstream)
+
+so that downstream consumers can identify the applicable terms without
+needing to re-derive them from the patched paths.
+
+For the full canonical text of every license used by the upstream OpenBSD
+source tree, see:
+
+    https://cvsweb.openbsd.org/src/share/misc/license.template?rev=HEAD
+    https://www.openbsd.org/policy.html
+
+No warranty is offered for these patches. They are provided in the hope
+they are useful for running OpenBSD on the King Jim Pomera DM250 family
+of devices, but you are responsible for verifying that they are safe to
+apply to your specific kernel tree and hardware.
