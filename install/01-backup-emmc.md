@@ -34,9 +34,43 @@ diskutil list external
 
 ## 1.2 バックアップツールを SD カードへコピー
 
+### 1.2.1 ekesete 配布物を取得 (初回のみ)
+
+ekesete (ichinomoto 氏) の zip を `install/files/backup-tool/` に展開する。
+リポには再配布しないので、各自配布元から取得する。
+
+```sh
+# on mac (初回のみ)
+STAGING=~/works/openbsd-pomera-dm250-staging
+cd "$STAGING/install/files"
+mkdir -p backup-tool
+
+# 配布元 page を開き、「DM200/DM250 eMMC NAND バックアップ/リストア
+# ツール v0.2」 の zip リンクを目視で確認 (page 本文内に貼られている):
+#   https://www.ekesete.net/log/?p=9504
+# その zip URL を ZIP_URL にセット (page の HTML を直接 curl して
+# href を grep するのも可):
+ZIP_URL='<上記 page から取得した zip の直接 URL>'
+
+curl -L -o /tmp/dm250-backup.zip "$ZIP_URL"
+unzip -d backup-tool /tmp/dm250-backup.zip
+
+# 展開後の構造を確認:
+ls backup-tool/DM200_DM250_emmc_backup_restore_v0.2/backup/
+# → _sdboot.sh / backup.sh / res/ が見えれば OK
+```
+
+> [!NOTE]
+> 配布元 page が落ちている場合は archive.org の最新キャッシュも候補。
+> SHA256 は取得時点で記録し [`PROVENANCE.md`](PROVENANCE.md) §ekesete を
+> 更新する運用。
+
+### 1.2.2 SD カードへコピー
+
 ```sh
 # on mac
-SRC=~/works/openbsd-pomera-dm250-staging/install/files/backup-tool/DM200_DM250_emmc_backup_restore_v0.2/backup
+STAGING=~/works/openbsd-pomera-dm250-staging   # §1.2.1 と同じ場所
+SRC="$STAGING/install/files/backup-tool/DM200_DM250_emmc_backup_restore_v0.2/backup"
 DST="/Volumes/NO NAME"   # SD カードのマウントポイント。実際の名前で置換
 
 cp -R "$SRC"/_sdboot.sh "$SRC"/backup.sh "$SRC"/res "$DST"/
