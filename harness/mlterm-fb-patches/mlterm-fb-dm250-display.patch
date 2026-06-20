@@ -1,0 +1,369 @@
+# mlterm-fb (3.8.3) DM250 表示修正パッチ
+#
+# 対象: ports x11/mlterm 3.8.3 の framebuffer backend (uitoolkit/fb + uitoolkit/ui_display.h)
+# 前提: 先に mlterm-fb-emoji-color-div0.patch (load_ft の upem=0 ゼロ除算ガード) と
+#       行高 vmetric パッチ (face->height 採用) を当てたツリーに重ねる。
+#
+# 直すもの (3 件):
+#  (1) フォントサイズ変更・スクロール時のハング + 入力ちらつき
+#      DM250 は 32bpp。mlterm の ENABLE_DOUBLE_BUFFER (back_fb) は <8bpp 専用で
+#      32bpp では mmap framebuffer に直書きしていた → 全画面再描画が直書きの嵐に
+#      なりハング/ちらつき。truecolor 時に _display.fb を malloc シャドウへ向け、
+#      実 mmap を real_fb に退避、ui_display_sync() で dirty 時に shadow→real を
+#      1 回 memcpy (compose-then-blit)。フック= X11 と同じ NEED_DISPLAY_SYNC_EVERY_TIME。
+#      → ui.h / ui_display.h / ui_display.c / ui_display_wscons.c
+#  (2) カラー絵文字が細い / 半分欠ける
+#      emoji グリフがフォントメトリック由来 (例 57x57) でセル (例 22px) に左上だけ
+#      クリップされていた。描画時にグリフをセル箱へ縮小・正方形維持・中央配置。
+#      → ui_window.c (draw_string_intern の is_bgra 分岐) / ui_font.c (is_bgra metric)
+#  (3) Nerd Font アイコン (wifi/BT 等) がセルより広く見切れる
+#      load 時に bitmap がセル幅 (width_full) を超えるグリフだけアスペクト保持で
+#      縮小・縦中央 (sbw>dbw で gate。通常テキストは不変)。
+#      → ui_font.c (get_ft_bitmap_intern の is_aa 分岐)
+#
+# 必須 ~/.mlterm/main: use_aafont = true / col_size_of_width_a = 1 /
+#                      unicode_full_width_areas = U+1F000-1FAFF
+#   (col_size_of_width_a=1 でアイコンを 1 セル=zsh の wcwidth と一致、
+#    unicode_full_width_areas で emoji を強制 2 セル)
+#
+# 適用: mlterm-3.8.3/ 直下で  patch -p1 < mlterm-fb-dm250-display.patch
+# 再ビルド: build dir で make → main/.libs/mlterm-fb を /usr/local/bin/mlterm-fb
+#           (setuid root 4755) に配置。
+# 検証: pomera DM250 実機 (2026-06-05)。再ビルド不要なら release armv7-artifacts-v1 の
+#       mlterm-fb.armv7 を直接 download (4noha/pomera-workspace-meta)。
+
+--- a/uitoolkit/fb/ui.h
++++ b/uitoolkit/fb/ui.h
+@@ -93,6 +93,15 @@
+ 
+   size_t plane_offset[8];
+ 
++  /*
++   * Deferred-flush shadow buffer (>= 8bpp / truecolor only).
++   * When real_fb != NULL, fb points to a malloc'd RAM shadow that all drawing
++   * goes to, and real_fb holds the mmap'd hardware framebuffer. ui_display_sync()
++   * blits the shadow to real_fb once per event-loop iteration (compose-then-blit).
++   */
++  unsigned char *real_fb;
++  int fb_dirty;
++
+ } Display;
+ 
+ #define PIXEL_RED(pixel, rgbinfo) (((pixel) >> (rgbinfo).r_offset) << (rgbinfo).r_limit)
+@@ -648,7 +657,13 @@
+ #endif
+ #undef SUPPORT_URGENT_BELL
+ #undef FORCE_UNICODE
+-#undef NEED_DISPLAY_SYNC_EVERY_TIME
++/*
++ * Enabled for the deferred-flush shadow buffer: ui_event_source.c calls
++ * ui_display_sync() before every select() so the shadow is blitted to the
++ * real framebuffer once per loop iteration. (Was #undef: the fb backend used
++ * to draw straight to the live framebuffer and needed no flush.)
++ */
++#define NEED_DISPLAY_SYNC_EVERY_TIME
+ #define DRAW_SCREEN_IN_PIXELS
+ #undef NO_DRAW_IMAGE_STRING
+ /*
+--- a/uitoolkit/ui_display.h
++++ b/uitoolkit/ui_display.h
+@@ -75,11 +75,12 @@
+ 
+ int ui_display_receive_next_event(ui_display_t *disp);
+ 
+-#if defined(USE_FRAMEBUFFER) || defined(USE_CONSOLE) || defined(USE_QUARTZ)
++#if defined(USE_CONSOLE) || defined(USE_QUARTZ)
+ #define ui_display_sync(disp) (0)
+ #elif defined(USE_WIN32GUI)
+ #define ui_display_sync(disp) ui_display_receive_next_event(disp)
+ #else
++/* USE_FRAMEBUFFER provides a real ui_display_sync() (deferred shadow flush). */
+ void ui_display_sync(ui_display_t *disp);
+ #endif
+ 
+--- a/uitoolkit/fb/ui_display.c
++++ b/uitoolkit/fb/ui_display.c
+@@ -208,6 +208,14 @@
+ }
+ 
+ static inline u_char *get_fb(int x, int y) {
++  /*
++   * Every framebuffer access computes its address through get_fb(), so this is
++   * the single choke point for marking the deferred-flush shadow dirty. Marking
++   * on reads too (e.g. get_pixel2) only causes a rare, harmless extra flush;
++   * missing a write would leave stale pixels, so we err toward over-flushing.
++   * Cheap no-op when not shadowed (real_fb == NULL).
++   */
++  _display.fb_dirty = 1;
+   return _display.fb + (_display.yoffset + y) * _display.line_length +
+          (_display.xoffset + x) * _display.bytes_per_pixel / _display.pixels_per_byte;
+ }
+@@ -1271,7 +1279,13 @@
+       close(_display.fd);
+     }
+ 
+-    munmap(_display.fb, _display.smem_len);
++    if (_display.real_fb) {
++      /* fb is the malloc'd shadow; real_fb is the mmap'd hardware framebuffer. */
++      free(_display.fb);
++      munmap(_display.real_fb, _display.smem_len);
++    } else {
++      munmap(_display.fb, _display.smem_len);
++    }
+     teardown_mark("TEARDOWN: post-munmap\n");
+     close(_display.fb_fd);
+     teardown_mark("TEARDOWN: done\n");
+@@ -1373,6 +1387,25 @@
+   }
+ 
+   return 0;
++}
++
++/*
++ * Deferred-flush of the shadow buffer: blit the RAM shadow to the real (mmap'd)
++ * hardware framebuffer in a single sequential memcpy. Called once per event-loop
++ * iteration before select() (NEED_DISPLAY_SYNC_EVERY_TIME) and from
++ * interrupt_vt100_cmd() to forcibly reflect long output. No-op unless shadowing
++ * is active (>= 8bpp) and something was drawn since the last flush.
++ *
++ * This is what turns a full-screen redraw (e.g. an OSC 5379 font size change)
++ * from thousands of scattered live-framebuffer writes into one clean memcpy,
++ * removing both the input flicker and the rkdrm write-storm that hung the
++ * console on resize.
++ */
++void ui_display_sync(ui_display_t *disp) {
++  if (_display.real_fb && _display.fb_dirty) {
++    memcpy(_display.real_fb, _display.fb, _display.smem_len);
++    _display.fb_dirty = 0;
++  }
+ }
+ 
+ void ui_display_idling(ui_display_t *disp) {
+--- a/uitoolkit/fb/ui_display_wscons.c
++++ b/uitoolkit/fb/ui_display_wscons.c
+@@ -515,6 +515,24 @@
+   if (_display.pixels_per_byte > 1 && !(_display.back_fb = malloc(_display.smem_len))) {
+     goto error;
+   }
++
++  /*
++   * For >= 8bpp (truecolor) framebuffers, where back_fb above is not allocated,
++   * set up a deferred-flush shadow: all drawing is redirected to a RAM buffer
++   * via _display.fb, and ui_display_sync() blits it to the real framebuffer
++   * once per event-loop iteration. If malloc fails we leave _display.fb pointing
++   * at the mmap'd framebuffer and fall back to the original direct rendering.
++   */
++  if (_display.pixels_per_byte == 1) {
++    unsigned char *shadow;
++
++    if ((shadow = malloc(_display.smem_len))) {
++      memcpy(shadow, _display.fb, _display.smem_len);
++      _display.real_fb = _display.fb;
++      _display.fb = shadow;
++      _display.fb_dirty = 0;
++    }
++  }
+ #endif
+ 
+   tcgetattr(STDIN_FILENO, &tm);
+--- a/uitoolkit/fb/ui_font.c
++++ b/uitoolkit/fb/ui_font.c
+@@ -660,7 +660,7 @@
+ }
+ 
+ static int load_ft(XFontStruct *xfont, const char *file_path, int32_t format, int is_aa,
+-                   u_int force_height) {
++                   u_int force_height, u_int force_width) {
+   u_int count;
+   FT_Face face;
+   u_int fontsize;
+@@ -740,8 +740,10 @@
+       (face->units_per_EM ? face->units_per_EM : 1);
+ #ifdef FT_HAS_COLOR
+   if (xfont->is_bgra) {
+-    /* emoji native bitmap は巨大 (136x128 等)。 mlterm CJK cell 相当に clamp。 */
+-    xfont->width_full = fontsize;
++    /* Color emoji is full-width (2 columns) and square. Size it to the primary
++       font's full-width cell (force_width) so it fills its 2 columns instead of
++       being drawn narrow/thin; fall back to fontsize when unknown. */
++    xfont->width_full = force_width ? force_width : fontsize;
+   }
+ #endif
+ #ifdef __DEBUG
+@@ -760,12 +762,16 @@
+     xfont->width = face->glyph->bitmap.width;
+   }
+ 
+-  if (force_height) {
+-    xfont->height = force_height;
+ #ifdef FT_HAS_COLOR
+-  } else if (xfont->is_bgra) {
+-    xfont->height = fontsize;
++  if (xfont->is_bgra) {
++    /* Keep the square color emoji undistorted: match its height to its
++       full-width cell size (force_width) rather than the taller line height,
++       so it isn't stretched vertically into a thin oval. */
++    xfont->height = force_width ? force_width : fontsize;
++  } else
+ #endif
++  if (force_height) {
++    xfont->height = force_height;
+   } else {
+     xfont->height = (face->height * face->size->metrics.y_ppem +
+                      face->units_per_EM - 1) / (face->units_per_EM ? face->units_per_EM : 1);
+@@ -1025,11 +1031,67 @@
+       }
+       bgra_mark("BGRA: downscale done\n");
+     } else if (xfont->is_aa) {
+-      for (y = 0; y < rows; y++) {
+-        memcpy(dst + left_pitch, src, pitch);
++      /* LCD bitmaps store 3 subpixels per pixel, so bitmap.width is 3x the
++         pixel width (cf. the proportional path: width = bitmap.width / 3). */
++      u_int sbw = face->glyph->bitmap.width / 3; /* actual glyph width (pixels) */
++      u_int dbw = xfont->glyph_width_bytes / 3;  /* cache width (pixels, == width_full) */
+ 
+-        src += face->glyph->bitmap.pitch;
+-        dst += xfont->glyph_width_bytes;
++      if (sbw > dbw && dbw > 0) {
++        /* Oversized fallback glyph (e.g. a wide Nerd Font icon whose bitmap is
++           wider than this font's cell). The original path clamped pitch to the
++           cell and clipped the right of the glyph. Instead downscale the whole
++           LCD glyph (3 bytes/pixel) to the cell width, PRESERVING ASPECT RATIO
++           (a horizontal-only shrink made round icons look thin), and center it
++           vertically. Gated by sbw > dbw, so normal text is untouched. */
++        u_int s_h = face->glyph->bitmap.rows;
++        u_int d_h = (sbw > 0) ? (s_h * dbw / sbw) : s_h;
++        int yoff;
++        u_int dy, dx;
++
++        if (d_h == 0) {
++          d_h = 1;
++        }
++        if (d_h > xfont->height) {
++          d_h = xfont->height;
++        }
++        /* Place the shrunk glyph's vertical center between the line center and
++           the baseline (ascent), so a small icon sits with the text body rather
++           than floating high in the line. */
++        {
++          int center = ((int)xfont->height / 2 + (int)xfont->ascent) / 2;
++          yoff = center - (int)d_h / 2;
++        }
++        if (yoff < 0) {
++          yoff = 0;
++        }
++        if (yoff + (int)d_h > (int)xfont->height) {
++          yoff = (int)xfont->height - (int)d_h;
++        }
++        if (yoff < 0) {
++          yoff = 0;
++        }
++
++        memset(glyph, 0, xfont->glyph_size);
++
++        for (dy = 0; dy < d_h; dy++) {
++          u_int sy = dy * s_h / d_h;
++          u_char *s = face->glyph->bitmap.buffer + sy * face->glyph->bitmap.pitch;
++          u_char *d = glyph + xfont->glyph_width_bytes * (yoff + dy);
++
++          for (dx = 0; dx < dbw; dx++) {
++            u_int sx = dx * sbw / dbw;
++            d[dx * 3] = s[sx * 3];
++            d[dx * 3 + 1] = s[sx * 3 + 1];
++            d[dx * 3 + 2] = s[sx * 3 + 2];
++          }
++        }
++      } else {
++        for (y = 0; y < rows; y++) {
++          memcpy(dst + left_pitch, src, pitch);
++
++          src += face->glyph->bitmap.pitch;
++          dst += xfont->glyph_width_bytes;
++        }
+       }
+ 
+       if (IS_PROPORTIONAL(xfont)) {
+@@ -1088,7 +1150,7 @@
+ static int load_xfont(XFontStruct *xfont, const char *file_path, int32_t format,
+                       u_int bytes_per_pixel, ef_charset_t cs, int noaa) {
+   if (!is_pcf(file_path)) {
+-    return load_ft(xfont, file_path, format, (bytes_per_pixel > 1) && !noaa, 0);
++    return load_ft(xfont, file_path, format, (bytes_per_pixel > 1) && !noaa, 0, 0);
+   } else {
+     return load_pcf(xfont, file_path);
+   }
+@@ -1492,7 +1554,8 @@
+            * force_height (xfont->height) forcibly changes the height of the font from natural one
+            * to the same one as xfont->height.
+            */
+-          else if (!load_ft(compl, fc_files[count], xfont->format, xfont->is_aa, xfont->height)) {
++          else if (!load_ft(compl, fc_files[count], xfont->format, xfont->is_aa, xfont->height,
++                             xfont->width_full)) {
+             free(compl);
+             continue;
+           }
+--- a/uitoolkit/fb/ui_window.c
++++ b/uitoolkit/fb/ui_window.c
+@@ -304,21 +304,43 @@
+ 
+ #if defined(USE_FREETYPE)
+       if (xfont->is_bgra && bpp == 4) {
+-        /* color emoji (BGRA sbix). bounds-checked, bypass the AA-only
+-           ui_get_bitmap_line macro (its memcmp + unbounded y read corrupts
+-           the cache for BGRA; primary font_height > emoji xfont->height). */
+-        u_char *bgra_line;
++        /* Color emoji (BGRA sbix). The cached glyph is ui_get_bitmap_width()
++           (== width_full) wide and xfont->height tall, which comes from the
++           font's own metric and is much larger than the terminal cell box
++           (font_width). Previously the draw clipped the glyph to font_width,
++           showing only its top-left corner ("half emoji"). Instead, SCALE the
++           glyph down to the cell box, keep it square (the source is square) and
++           center it horizontally and vertically in the line. */
++        u_int src_w = ui_get_bitmap_width(xfont);
++        u_int src_h = xfont->height;
++        u_int dst_w = font_width;
++        u_int dst_h = (src_w > 0) ? (src_h * dst_w / src_w) : src_h;
++        int xoff_glyph;
++        int voff;
++        int gy;
++        u_char *bgra_line = NULL;
+ 
+-        if (y_off < (int)xfont->height) {
+-          bgra_line = bitmaps[count] + y_off * xfont->glyph_width_bytes;
+-        } else {
+-          bgra_line = NULL; /* row beyond emoji glyph -> background */
++        if (dst_h > font_height) {
++          /* taller than the line: fit to height instead, keep square */
++          dst_h = font_height;
++          dst_w = (src_h > 0) ? (src_w * dst_h / src_h) : dst_w;
++        }
++        xoff_glyph = ((int)font_width - (int)dst_w) / 2;
++        if (xoff_glyph < 0) xoff_glyph = 0;
++        voff = ((int)font_height - (int)dst_h) / 2;
++        if (voff < 0) voff = 0;
++
++        gy = y_off - voff;
++        if (gy >= 0 && gy < (int)dst_h && src_w > 0 && dst_w > 0 && dst_h > 0) {
++          u_int sy = (u_int)gy * src_h / dst_h;
++          bgra_line = bitmaps[count] + sy * xfont->glyph_width_bytes;
+         }
+ 
+         for (x_off = 0; x_off < (int)font_width; x_off++, p += bpp) {
+-          if (bgra_line && font_x_off <= x_off &&
+-              x_off < font_x_off + (int)ui_get_bitmap_width(xfont)) {
+-            u_char *sp = bgra_line + (x_off - font_x_off) * 4;
++          int gx = x_off - xoff_glyph;
++          if (bgra_line && gx >= 0 && gx < (int)dst_w) {
++            u_int sx = (u_int)gx * src_w / dst_w;
++            u_char *sp = bgra_line + sx * 4;
+ 
+             if (sp[3] >= 0x80) {
+               /* opaque-ish: BGRA bytes -> fb 32bpp pixel (overwrite) */
+@@ -327,7 +349,6 @@
+             } else if (!src_bg_is_set) {
+               copy_pixel(p, ui_display_get_pixel(win->disp, x + x_off, y + y_off), bpp);
+             }
+-            /* else: src already holds bg from the memset above */
+           } else if (!src_bg_is_set) {
+             copy_pixel(p, ui_display_get_pixel(win->disp, x + x_off, y + y_off), bpp);
+           }

@@ -1,0 +1,100 @@
+# mlterm-fb DECSET 2026 (synchronized output / BSU-ESU) support.
+#
+# 目的: claude-master-go の "claude-master tmux-wrap" が出す
+#   BSU(CSI ?2026 h) ... ESU(CSI ?2026 l) を mlterm-fb が解釈し、
+#   その間シャドウバッファ->fb の blit を保留して 1 フレームを原子的に出す。
+#   -> tmux 経由の Claude セッション表示が「対応端末(iTerm2/kitty 等)」と
+#     同じくちらつきゼロになる(mlterm は元々 2026 非対応でちらついていた)。
+#
+# 仕組み: ui_display_sync()(fb の唯一の blit choke point)を mlterm_fb_sync
+#   フラグでゲート。?2026h で 1(blit 保留)、?2026l で 0(次 sync で一括 blit)。
+#
+# 🔴 安全策(必須・2026-06-12 追加): BSU の後 ESU が来ないと blit が永久に
+#   止まり画面凍結する事故が発生した(claude 終了/detach がフレーム途中だと
+#   ESU を伴わない BSU が残る)。対策として ui_display_sync() に
+#   **150ms タイムアウト**を入れた: BSU から 150ms 以内に ESU が来なければ
+#   sync をタイムアウト扱いして強制 blit + フラグ解除。これで stray BSU でも
+#   絶対に凍結しない(最悪 150ms 遅延し、次のイベントループ/キー入力で復帰)。
+#   DECSET 2026 仕様(端末側タイムアウト)に沿った正しい挙動。<sys/time.h> 必要。
+#
+# 適用: mlterm-3.8.3 ソースルートで  patch -p1 < この.patch
+# 検証: nm main/.libs/mlterm-fb | grep mlterm_fb_sync   (B シンボル +
+#       ui_display_sync.bsu_since が出れば OK)
+# 出力バイナリ: main/.libs/mlterm-fb (libtool 実体)。これを mlterm-fb.emoji へ。
+# 由来: 2026-06-12 実装・実機確認。タイムアウト版バイナリ 1459736
+#       (タイムアウト無し初版 1459216 は凍結バグありにつき破棄)。
+
+--- a/vtemu/vt_parser.c
++++ b/vtemu/vt_parser.c
+@@ -99,6 +99,10 @@
+
+ /* If u_int64_t is defined as 32 bit (unsigned long), 1 << (32 or larger) is ignored. */
+ static u_int64_t true64 = 1;
++/* DECSET 2026 (synchronized output): set by "CSI ?2026 h", cleared by
++ * "CSI ?2026 l". Read by the fb backend's ui_display_sync() to defer the
++ * shadow->framebuffer blit so a whole frame lands atomically (no flicker). */
++int mlterm_fb_sync = 0;
+ #define SHIFT_FLAG64(mode) ((sizeof(true64) < 8 && (mode) >= 32) ? 0 : (true64 << (mode)))
+
+ #define INITIAL_VTMODE_FLAGS \
+@@ -3680,7 +3684,9 @@
+           int count;
+
+           for (count = 0; count < num; count++) {
+-            if (ps[count] < VTMODE(0)) {
++            if (ps[count] == 2026) {
++              mlterm_fb_sync = 1; /* DECSET 2026 BSU: begin synchronized update */
++            } else if (ps[count] < VTMODE(0)) {
+               set_vtmode(vt_parser, ps[count], 1);
+             }
+           }
+@@ -3702,7 +3708,9 @@
+           int count;
+
+           for (count = 0; count < num; count++) {
+-            if (ps[count] < VTMODE(0)) {
++            if (ps[count] == 2026) {
++              mlterm_fb_sync = 0; /* DECSET 2026 ESU: end synchronized update */
++            } else if (ps[count] < VTMODE(0)) {
+               set_vtmode(vt_parser, ps[count], 0);
+             }
+           }
+--- a/uitoolkit/fb/ui_display.c
++++ b/uitoolkit/fb/ui_display.c
+@@ -7,6 +7,7 @@
+ #include <fcntl.h>     /* open */
+ #include <sys/mman.h>  /* mmap */
+ #include <sys/ioctl.h> /* ioctl */
++#include <sys/time.h>  /* gettimeofday, struct timeval */
+ #include <string.h>    /* memset/memcpy */
+ #include <stdlib.h>    /* getenv */
+ #include <termios.h>
+@@ -1401,7 +1402,28 @@
+  * removing both the input flicker and the rkdrm write-storm that hung the
+  * console on resize.
+  */
++extern int mlterm_fb_sync; /* DECSET 2026: defer blit while a sync update is open */
+ void ui_display_sync(ui_display_t *disp) {
++  /* DECSET 2026 synchronized output: defer the shadow->fb blit while a BSU
++   * (CSI ?2026 h) is open so a frame lands atomically. Safety: if no ESU
++   * (CSI ?2026 l) arrives within 150ms, the sync is treated as timed out and
++   * the blit is forced, so a stray BSU can never freeze the screen. */
++  static struct timeval bsu_since = {0, 0};
++  if (mlterm_fb_sync) {
++    struct timeval now;
++    gettimeofday(&now, NULL);
++    if (bsu_since.tv_sec == 0 && bsu_since.tv_usec == 0) {
++      bsu_since = now; /* first deferred blit under this BSU */
++      return;
++    }
++    if ((now.tv_sec - bsu_since.tv_sec) * 1000 +
++        (now.tv_usec - bsu_since.tv_usec) / 1000 < 150) {
++      return; /* still inside the 150ms sync window: keep deferring */
++    }
++    mlterm_fb_sync = 0; /* BSU without ESU: timed out, fall through and blit */
++  }
++  bsu_since.tv_sec = 0;
++  bsu_since.tv_usec = 0;
+   if (_display.real_fb && _display.fb_dirty) {
+     memcpy(_display.real_fb, _display.fb, _display.smem_len);
+     _display.fb_dirty = 0;

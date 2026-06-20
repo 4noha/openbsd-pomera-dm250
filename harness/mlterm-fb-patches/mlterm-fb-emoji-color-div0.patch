@@ -1,0 +1,56 @@
+# mlterm-fb color emoji 表示: ゼロ除算クラッシュ修正パッチ
+#
+# 対象: mlterm-3.8.3 (ports x11/mlterm) の fb backend
+#   uitoolkit/fb/ui_font.c :: load_ft()
+#
+# 症状: NotoColorEmoji 等の color emoji フォント (FT_HAS_COLOR) を読み込んだ
+#   瞬間に mlterm-fb が SIGFPE でクラッシュ。 auto_restart (default true) が
+#   pty を引き継いで自己再起動するため「画面リセット/ちらつき」に偽装され、
+#   長らく原因が掴めなかった。
+#
+# 真因: NotoColorEmoji はビットマップ専用フォントで FreeType が
+#   face->units_per_EM == 0 を返す (実測: scalable=0, num_fixed=1, upem=0)。
+#   load_ft() は width_full / height / ascent を `/ face->units_per_EM` で
+#   計算してから is_bgra 用に上書きする構造で、 上書きより手前の除算が
+#   units_per_EM==0 で実行され __aeabi_idiv0 → SIGFPE。
+#
+# 修正: 除算分母 3 箇所を 0 ガード (`x ? x : 1`)。 is_bgra はどのみち結果を
+#   上書きするので /1 の値は捨てられる。 非 bgra の scalable フォントは
+#   units_per_EM != 0 なので挙動不変。
+#
+# 検証 (2026-06-02): pomera DM250 実機 framebuffer console で 😀😃😄😁 が
+#   カラー表示、 クラッシュ無し・クリーン終了。 bgra.log に downscale 到達を確認。
+#
+# 適用: 実機 build dir /mnt/sd/build-mlterm/mlterm-3.8.3/ に適用済み。
+#   バックアップ: uitoolkit/fb/ui_font.c.bak-upem-div0
+#   再ビルド: build dir 直下で `make` → main/.libs/mlterm-fb を
+#   /usr/local/bin/mlterm-fb (setuid root 4755) に配置。
+
+--- a/uitoolkit/fb/ui_font.c
++++ b/uitoolkit/fb/ui_font.c
+@@ -737,7 +737,7 @@
+
+   xfont->width_full =
+       (face->max_advance_width * face->size->metrics.x_ppem + face->units_per_EM - 1) /
+-      face->units_per_EM;
++      (face->units_per_EM ? face->units_per_EM : 1);
+ #ifdef FT_HAS_COLOR
+   if (xfont->is_bgra) {
+     /* emoji native bitmap は巨大 (136x128 等)。 mlterm CJK cell 相当に clamp。 */
+@@ -768,7 +768,7 @@
+ #endif
+   } else {
+     xfont->height = (face->max_advance_height * face->size->metrics.y_ppem +
+-                     face->units_per_EM - 1) / face->units_per_EM;
++                     face->units_per_EM - 1) / (face->units_per_EM ? face->units_per_EM : 1);
+   }
+ #ifdef __DEBUG
+   bl_debug_printf("maxh %d ppem %d units %d => h %d\n",
+@@ -776,7 +776,7 @@
+                   face->units_per_EM, xfont->height);
+ #endif
+   xfont->ascent =
+-      (face->ascender * face->size->metrics.y_ppem + face->units_per_EM - 1) / face->units_per_EM;
++      (face->ascender * face->size->metrics.y_ppem + face->units_per_EM - 1) / (face->units_per_EM ? face->units_per_EM : 1);
+ #ifdef FT_HAS_COLOR
+   if (xfont->is_bgra) {
