@@ -343,3 +343,59 @@ gpioctl gpio1 red_led 1; sleep 1; gpioctl gpio1 red_led 0   # LED 点灯
 >   `ifconfig bwfm0 down`、もしくは `sysctl machdep.lidaction=0`
 > - カーネル追い込みの経緯・パッチは [`../kernel-patches/`](../kernel-patches/)、
 >   resume harness は [`../harness/`](../harness/)
+
+### 5.12 蓋閉=バックライト消灯 + 2 時間で deep sleep (任意・推奨)
+
+`machdep.lidaction=1` (蓋閉で即 full suspend) は上記のとおり WiFi が
+up のままだと crash 路線。代替として、`machdep.lidaction=0` にして
+ユーザーランドで lid を見張り、**蓋閉 → backlight off** (SoC/SD は
+動かし続けるので resume が一瞬) → **2 時間閉じっぱなしなら deep sleep**
+(full suspend) という運用を組み立てる。蓋を開けると wake してくる
+(`lid-open wake` は実機確認済)。
+
+armv7 base には `apm(8)` バイナリが入っていないので、`apm -z` 相当の
+`APM_IOC_SUSPEND` ioctl を叩く小ヘルパー [`../harness/pomera-suspend.c`](../harness/pomera-suspend.c)
+を pomera 上でビルドして使う。
+
+```sh
+# on pomera (installed) — root で
+# 1) lid で suspend しない設定
+doas sysctl machdep.lidaction=0
+doas sh -c 'grep -q ^machdep.lidaction= /etc/sysctl.conf \
+  && sed -i s/^machdep.lidaction=.*/machdep.lidaction=0/ /etc/sysctl.conf \
+  || echo machdep.lidaction=0 >> /etc/sysctl.conf'
+
+# 2) deep sleep ヘルパーをビルド + 配置 (base の cc、<machine/apmvar.h> 使用)
+HARNESS=~/openbsd-pomera-dm250/harness   # scp -r で repo を pomera に置いた前提
+cd /tmp
+cc -O2 -Wall -o pomera-suspend "$HARNESS/pomera-suspend.c"
+doas install -o root -g wheel -m 0755 pomera-suspend /etc/pomera-suspend
+
+# 3) lid 監視デーモンを設置
+doas install -o root -g wheel -m 0755 \
+  "$HARNESS/pomera-lid-watch.sh" /etc/pomera-lid-watch.sh
+
+# 4) boot 自動起動 (/etc/rc.local の末尾に追記)
+printf '\n[ -x /etc/pomera-lid-watch.sh ] && /etc/pomera-lid-watch.sh >/dev/null 2>&1 &\n' \
+  | doas tee -a /etc/rc.local >/dev/null
+# 今すぐ起動 (次回 boot まで待たない場合)
+doas sh -c 'nohup /etc/pomera-lid-watch.sh >/dev/null 2>&1 &'
+```
+
+挙動メモ:
+
+- 監視は `hw.sensors.gpiokeys0.indicator0` (`On (lid open)` / `Off` = 閉) を
+  約 2 s 間隔で polling。
+- backlight は `wsconsctl display.brightness` で読み書き。前値を
+  `/var/run/lid-brightness` に保存して蓋開で復元。
+- **deep sleep までの時間**を変えたいときは `pomera-lid-watch.sh` の
+  `SUSPEND_AFTER=7200` (秒) を編集。「即復帰運用に徹したい」 = deep sleep
+  しないなら `SUSPEND_AFTER=99999999` 等の大きな値、もしくはその行を消す。
+- **元の挙動 (蓋で即 full suspend) に戻す**には `machdep.lidaction=1` +
+  `pomera-lid-watch.sh` 行を `/etc/rc.local` から削除。
+
+> [!NOTE]
+> 体感上の「resume に ~50 s かかる」は **画面 (mlterm) の復帰ではなく
+> WiFi (bwfm) の再 attach** が遅いのが原因。画面自体は数秒で戻っている。
+> mlterm-fb を eMMC に逃がして SD 依存を切る運用については
+> [`../harness/mlterm-fb-patches/README.md`](../harness/mlterm-fb-patches/README.md) を参照。

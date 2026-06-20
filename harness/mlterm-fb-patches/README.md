@@ -92,6 +92,22 @@ cp /path/to/harness/mlterm-aafont ~/.mlterm/aafont
 停止は `SIGTERM` で clean exit させること (`SIGKILL` だと wscons の VT
 state が汚れて getty が見えなくなる。詰んだら `doas reboot` でリセット)。
 
+> [!NOTE]
+> **OSC 5379 のランタイムフォントリサイズは使わない**。`printf '\e]5379;
+> fontsize=N\a'` で mlterm-fb がデバイスを落として再起動する挙動があり、
+> これが ssh セッションの cleanup/EXIT 内で叩かれると、走っている
+> parent (ssh / claude wrapper) が終わらなくなる事故が出る。font 切替が
+> 要るならセッションを切ってから `~/.mlterm/main` の `fontsize=` を書き
+> 換えて再起動する。`tailscale-optional/claude` の `set_font()` は
+> このため no-op になっている (2026-06-12)。
+
+> [!TIP]
+> **256 色を確実に通す**: tmux 越しに 256 色が抜けない場合は mlterm の
+> `~/.mlterm/main` で `termtype = xterm-256color` を明示する。default の
+> `xterm` (terminfo の "xterm" は 8 色エントリ) が tmux 側を 8/16 色に
+> 絞っているのが真因。`xterm-256color` の terminfo は macOS 標準 +
+> OpenBSD base に両方入っているので、ssh で往復してもズレない。
+
 ## 検証 (実機実測)
 
 | 観察 | 期待 |

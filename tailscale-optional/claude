@@ -34,12 +34,16 @@ SSHOPT="-o ConnectTimeout=4 -o BatchMode=yes"
 
 esc=$(printf '\033')
 
-# Resize mlterm-fb font via OSC 5379. Only emit when stdout is a TTY.
-# (Going through "mlterm-fb -e su -l ..." can lose $MLTERM under su, so
-#  TTY detection is more robust than checking $MLTERM. OSC 5379 is a
-#  no-op on terminals that don't recognize it.)
+# Resize mlterm-fb font via OSC 5379 — DISABLED (2026-06-12).
+# OSC 5379 runtime font resize causes mlterm-fb to tear down its device
+# state and restart. When set_font fires inside cleanup/EXIT, the restart
+# races with the parent's exit and leaves the parent unable to terminate
+# ("can't exit after returning from ssh"). The font is now whatever the
+# config in ~/.mlterm/main says (we leave fontsize=19 from harness/
+# mlterm-main throughout the session). The body of set_font() is kept
+# as a no-op so the existing call sites stay compilable.
 set_font() {
-    [ -t 1 ] && printf '%s]5379;fontsize=%s\007' "$esc" "$1"
+    :   # disabled. orig: [ -t 1 ] && printf '%s]5379;fontsize=%s\007' "$esc" "$1"
 }
 
 build_status() {
@@ -119,9 +123,16 @@ SSH_KEEP="-o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o TCPKeepAlive=no 
 # Homebrew's tmux (/opt/homebrew/bin/tmux) is not found -> looks like a
 # disconnection. $SHELL -l -c forces login mode so the .zprofile / PATH
 # are sourced. $SHELL is expanded on the remote side.
+#
+# LC_ALL=en_US.UTF-8: ssh does not forward LANG, so without this the
+# remote tmux client falls back to LC_CTYPE=C and Japanese characters
+# render as `_`. en_US (not ja_JP) is intentional: mlterm's
+# col_size_of_width_a=1 (ambiguous width = 1) lines up with en_US's
+# character width tables, not ja_JP's.
+# tmux -u: force UTF-8 mode on tmux itself (in addition to LC_ALL).
 delay=2
 while :; do
-    ssh $SSH_KEEP "$REMOTE" -t "exec \$SHELL -l -c 'tmux attach -t $SESSION || tmux new -s $SESSION'"
+    ssh $SSH_KEEP "$REMOTE" -t "exec \$SHELL -l -c 'export LC_ALL=en_US.UTF-8; tmux -u attach -t $SESSION || tmux -u new -s $SESSION'"
     rc=$?
     [ "$rc" -eq 0 ] && break
     printf 'claude: connection dropped (rc=%s). reconnecting in %ss... (Ctrl-C to abort)\n' "$rc" "$delay" >&2
