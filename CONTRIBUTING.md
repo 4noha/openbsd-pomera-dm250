@@ -47,11 +47,13 @@ Out of scope:
 
 - **Languages**: shell (POSIX `sh` or `ksh`, not bash extensions), C
   (OpenBSD style — `KNF`, see `style(9)`), Python 3 (PEP 8 with 4-space
-  indent).
+  indent), Kotlin (Android Kotlin style guide, 4-space indent, official
+  `kotlin.code.style=official`).
 - **Filenames**: lowercase with hyphens (`do-thing.sh`), not snake_case,
   not CamelCase.
-- **SPDX headers**: every new C / sh / py file in `install/`, `panctl/`,
-  `harness/`, `battery/`, `logo/`, `tailscale-optional/`, and `docs/`
+- **SPDX headers**: every new C / sh / py / Kotlin / XML file in
+  `install/`, `panctl/`, `harness/`, `battery/`, `logo/`,
+  `tailscale-optional/`, `wake-android-tether/`, and `docs/`
   must start with:
 
   ```
@@ -125,7 +127,7 @@ public docs and scripts are welcome.
 ## Build / test expectations
 
 For changes under `install/`, `panctl/`, `harness/`, `battery/`,
-`logo/`, `tailscale-optional/`:
+`logo/`, `tailscale-optional/`, `wake-android-tether/`:
 
 - New shell scripts should pass `sh -n` and (where practical)
   `shellcheck`.
@@ -133,6 +135,10 @@ For changes under `install/`, `panctl/`, `harness/`, `battery/`,
   `flake8`).
 - New C should compile with `cc -Wall -Werror` against the OpenBSD
   base toolchain.
+- New Kotlin under `wake-android-tether/` should at minimum compile via
+  `./gradlew :app:assembleDebug` from the subtree root. The bundled
+  gradle wrapper pins Gradle / AGP / Kotlin versions, so a working
+  build only needs JDK 17 and an Android SDK (`compileSdk = 34`).
 
 For kernel patch changes:
 

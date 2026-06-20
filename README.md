@@ -154,6 +154,7 @@ its own README and is meant to be readable in isolation.
 | `install/`                | The "from a brand-new DM250 to a usable OpenBSD shell" procedure: eMMC backup pointer, OpenBSD installer SD prep, Wi-Fi / BT firmware install, keymap, hostname, and the first reboot. |
 | `kernel-patches/`         | A patch series layered on top of `jcs/openbsd-src` rk3128. Each `*.patch` file carries an upstream-base note and inherits OpenBSD's ISC license (see `LICENSE-ISC`). |
 | `panctl/`                 | The Bluetooth PAN tether daemon and its supporting `netwatchd` glue: pair once, then claim the default route on demand when Wi-Fi disappears. |
+| `wake-android-tether/`    | The Android-side companion: a Kotlin app that accepts the RFCOMM connection from `panctl/` and demultiplexes mux frames into per-socket TCP/UDP on the phone's cellular link. **Alpha** — read [`wake-android-tether/README.md`](wake-android-tether/README.md) before building. |
 | `harness/`                | A persistent-log suspend / resume debug harness. Survives a kernel crash, replays the same scenario on the next boot, and lets you bisect WiFi-resume regressions without sitting in front of the device. |
 | `logo/`                   | A small extractor + replacement tool for the DM250 splash logo. Sources the factory image from *your own* eMMC backup; nothing copyrighted ships in this repo. |
 | `battery/`                | An OCV-corrected PS1 prompt that calls into the RK818 fuel-gauge counters and corrects for the gauge's well-known idle drift. |

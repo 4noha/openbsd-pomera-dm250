@@ -360,13 +360,16 @@ doas reboot
 
 ## Android 側の進捗
 
-`../android_app/` を **1-E (Shizuku) ベースから 1-G mux server に全面書き換え済み**。
+Android アプリは [`../wake-android-tether/`](../wake-android-tether/) として
+このリポに同梱 (alpha)。 **1-E (Shizuku) ベースから 1-G mux server に全面書き換え済み**:
 
 - 削除: `tether/`, `privileged/`, `aidl/`, Shizuku 依存, ASCII protocol, token
 - 追加: `mux/Frame.kt`, `mux/FrameWriter.kt`, `mux/MuxServer.kt`, `mux/TcpStream.kt`, `mux/UdpStream.kt`
-- 必要 permission は `BLUETOOTH_*` + `INTERNET` + `FOREGROUND_SERVICE_*` のみ。**signature 系ゼロ**
+- 必要 permission は `BLUETOOTH_*` + `INTERNET` + `FOREGROUND_SERVICE_*` のみ。 **signature 系ゼロ**
 
-build 検証はホスト Mac 上 / Android Studio で別途。
+build は標準 Gradle (`./gradlew :app:assembleDebug`)。 詳細は
+[`../wake-android-tether/README.md`](../wake-android-tether/README.md)。
+panctl 側との E2E echo は本ファイル「次フェーズ」 step 6 で未達。
 
 ## 次にやること (Phase A 着手の最短経路)
 
