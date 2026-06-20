@@ -70,9 +70,35 @@ OpenBSD project 配布。本手順は **OpenBSD 7.9 (snapshot date 2026-05-26)**
 > 7.10 にアップグレードする場合はファイル名を `*80.tgz` に揃え、本ファイルの
 > バージョン番号も同時に更新する。
 
-`install/files/arm64-snapshot/install79.img` は qemu install runner
-([`../docs/build-vm.md`](../docs/build-vm.md)) 用。同じ snapshot 配布元から
-`install79.img` を取る。
+## OpenBSD arm64 snapshot (qemu installer)
+
+`install/files/arm64-snapshot/install79.img` は Mac 上の qemu-system-aarch64
+(HVF) で起動する OpenBSD/arm64 installer ramdisk。SD prep の経路 A
+([`02-make-sd.md`](02-make-sd.md) §2.3, [`../docs/build-vm.md`](../docs/build-vm.md) §1)
+専用で、pomera 実機には入らない (実機は armv7)。
+
+- 配布元: <https://ftp.openbsd.org/pub/OpenBSD/snapshots/arm64/>
+  または mirror (`<mirror>/pub/OpenBSD/snapshots/arm64/`)
+
+`install/files/arm64-snapshot/` に置くファイル:
+
+| ファイル | 用途 | SHA256 |
+|---|---|---|
+| `install79.img` | OpenBSD arm64 installer (660 MB, bootable raw) | (snapshot 由来) |
+| `SHA256` | snapshot 同梱の SHA256 一覧 | (snapshot 由来) |
+| `SHA256.sig` | 同梱 signify 署名 | (snapshot 由来) |
+
+> 取得後:
+> ```sh
+> cd install/files/arm64-snapshot
+> shasum -a 256 -c SHA256       # install79.img を検証
+> # 署名も検証する場合:
+> signify -C -p /etc/signify/openbsd-79-base.pub -x SHA256.sig install79.img
+> ```
+>
+> 7.10 にアップグレードする場合はファイル名 `install80.img` に揃え、
+> 同時に armv7 snapshot のバージョン番号 (§ OpenBSD armv7 snapshot) も
+> 同期して更新する。
 
 ## bwfm firmware (Broadcom)
 
@@ -138,8 +164,10 @@ GitHub Releases で配布する。SHA256 と asset 名は
 # on mac
 cd ~/works/openbsd-pomera-dm250-staging/install/files
 
-# OpenBSD snapshot
+# OpenBSD armv7 snapshot
 ( cd armv7-snapshot && signify -C -p /etc/signify/openbsd-79-base.pub -x SHA256.sig *.tgz )
+# OpenBSD arm64 snapshot (qemu installer)
+( cd arm64-snapshot && shasum -a 256 -c SHA256 )
 
 # 自前で記録した SHA256
 shasum -a 256 -c dm250/SHA256
