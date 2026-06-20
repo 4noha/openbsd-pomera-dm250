@@ -45,7 +45,46 @@ capture() {
 	ifconfig bwfm0 2>&1 | sed 's/^/    | /' >> "$LOG"
 	log "  dmesg tail:"
 	dmesg | tail -6 | sed 's/^/    | /' >> "$LOG"
+	capture_firmware_reachability
 	flush
+}
+
+# firmware load fail (bwfm0: failed loadfirmware of file ...) の真因切り分け用。
+# bwfm の resume kthread が動く瞬間に /etc/firmware/* が VFS から読めるか確認する。
+# eMMC sd1 (rootfs) が resume で force-detach されて再 attach 待ちなら、ここで
+# 1) /etc/firmware ディレクトリの readdir が EIO/ENOENT
+# 2) brcmfmac*.bin の dd 読み出しが失敗 (短時間 read)
+# 3) sd1 が disklabel で見えるが mount/df は古いマウント情報のまま
+# のいずれかが観測されるはず。各サンプル時点で fsync 込みで残す。
+capture_firmware_reachability() {
+	_fwbin=/etc/firmware/brcmfmac43430-sdio.rockchip,pomera-dm250.bin
+	_fwfallback=/etc/firmware/brcmfmac43430-sdio.bin
+	log "  firmware reachability:"
+	# mount 状態 (sd1a=rootfs / sd0a=SDcard)
+	log "    mount sd0/sd1   :"
+	mount 2>/dev/null | grep -E '/dev/sd[01]' | sed 's/^/      | /' >> "$LOG"
+	# /etc/firmware/ readdir (root fs 上のディレクトリエントリ)
+	log "    /etc/firmware ls :"
+	ls -la /etc/firmware/ 2>&1 | head -8 | sed 's/^/      | /' >> "$LOG"
+	# 実際のファイル read: 先頭 64B を dd で読む。これが ENOENT/EIO なら鍵。
+	for _f in "$_fwbin" "$_fwfallback"; do
+		if [ -e "$_f" ]; then
+			_first=$(dd if="$_f" bs=64 count=1 2>/dev/null | wc -c 2>/dev/null || echo X)
+			_size=$(ls -l "$_f" 2>/dev/null | awk '{print $5}')
+			log "    read $_f : first_64B_bytes=${_first} size=${_size:-?}"
+		else
+			log "    read $_f : MISSING"
+		fi
+	done
+	# bwfm0 ifnet 状態と sd0/sd1 disk node 存在
+	log "    /dev/sd0c    : $([ -c /dev/rsd0c ] && echo present || echo absent)"
+	log "    /dev/sd1c    : $([ -c /dev/rsd1c ] && echo present || echo absent)"
+	# 直近 dmesg から firmware/init bus エラーを抽出 (一発で見える)
+	_fwerr=$(dmesg 2>/dev/null | grep -E 'failed loadfirmware|could not init bus|cannot enable function|sdmmc[01]:|bwfm0:' | tail -8)
+	if [ -n "$_fwerr" ]; then
+		log "    dmesg fw/bus signals:"
+		printf '%s\n' "$_fwerr" | sed 's/^/      | /' >> "$LOG"
+	fi
 }
 
 # ---- resume / reboot 後の判定 + 採取 ----

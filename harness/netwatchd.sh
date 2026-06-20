@@ -38,17 +38,18 @@ FULL_BAT=99          # %; これ以上で 充電完了 (green)
 log() { logger -t netwatchd -p daemon.info "$*"; }
 
 wifi_up() {
-    ifconfig "$WIFI_IF" down 2>/dev/null
-    sleep 1
-    ifconfig "$WIFI_IF" up 2>/dev/null
+    # `ifconfig $IF down/up` だけでは /etc/hostname.$IF の SSID/wpakey/inet
+    # autoconf を再 apply しないので resume 後の WiFi 再 join に失敗する。
+    # /etc/netstart $IF を呼ぶと hostname.$IF を再 parse して join + dhcpleased
+    # 駆動まで一気にやってくれる。 dhclient(8) は OpenBSD 7.x で deprecated
+    # (置換: dhcpleased(8))、 直接叩かない。
+    sh /etc/netstart "$WIFI_IF" >/dev/null 2>&1
     for _try in 1 2 3 4 5 6 7 8 9 10; do
         sleep 1
         ifconfig "$WIFI_IF" 2>/dev/null | grep -q "status: active" && return 0
     done
-    log "wifi_up: still no link after 10s, kick dhclient"
-    pkill -f "dhclient.*$WIFI_IF" 2>/dev/null
-    sleep 1
-    dhclient "$WIFI_IF" >/dev/null 2>&1 &
+    log "wifi_up: still no link after 10s, re-issue netstart"
+    sh /etc/netstart "$WIFI_IF" >/dev/null 2>&1
 }
 
 is_wifi_active() {
@@ -233,7 +234,8 @@ while :; do
     if [ "$elapsed" -gt "$RESUME_THRESHOLD" ]; then
         # resume 直後に bwfm を触ると、 カーネル側 bwfm の resume 再init
         # (DVACT_WAKEUP -> bwfm_init) と競合し net80211 の NULL/stale 参照で
-        # kernel data abort (ddb) になる。 対策: settle してから、 かつ
+        # kernel data abort (ddb) になる。 実機 2026-06-02 で bwfm_update_node /
+        # ieee80211_ba_del の fatal trap を確認。 対策: settle してから、 かつ
         # カーネルが自力で WiFi を戻せていない時だけ wifi_up する。
         log "resume detected (slept ${elapsed}s) -- settle ${RESUME_SETTLE:-8}s before touching wifi"
         sleep "${RESUME_SETTLE:-8}"
