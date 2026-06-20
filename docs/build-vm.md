@@ -35,19 +35,50 @@ The SD-card-prep procedure (install guide §3) assumes an OpenBSD host, but macO
 
 ### 1.3 File layout under `install/files/`
 
-```
-arm64-snapshot/
-  install79.img    OpenBSD 7.9 arm64 install image (660 MB, bootable raw)
-  miniroot79.img   (unused — minimal, no GUI variant)
-  SHA256 / SHA256.sig
+`install/files/` には 2 系統のファイルが入る:
 
-qemu-prep-sd.sh    Mac-side launcher (HTTP server + qemu + driver, under sudo)
-driver.py          Drives the qemu serial socket from Python: parses
-                   installer output, sends commands, runs prep-sd.sh
-prep-sd.sh         Runs inside the qemu OpenBSD installer ramdisk shell.
-                   Self-contained: fdisk / newfs / mount / ftp deploy of
-                   sets, all in one script
+- **first-party scripts** — checked into this repo. `git clone` でそのまま揃う。
+- **distribution binaries** — このリポには含めない。
+  [`../install/PROVENANCE.md`](../install/PROVENANCE.md) の URL から各自取得して
+  同 dir に展開する (権利・サイズの都合)。
+
 ```
+install/files/
+├─ qemu-prep-sd.sh        [in-tree] Mac-side launcher (HTTP server + qemu + driver, under sudo)
+├─ driver.py              [in-tree] Drives the qemu serial socket from Python: parses
+│                                   installer output, sends commands, runs prep-sd.sh
+├─ prep-sd.sh             [in-tree] Runs inside the qemu OpenBSD installer ramdisk shell.
+│                                   Self-contained: fdisk / newfs / mount / ftp deploy of sets.
+│
+├─ arm64-snapshot/        [PROVENANCE: cdn.openbsd.org/.../snapshots/arm64/]
+│   ├─ install79.img        OpenBSD 7.9 arm64 install image (660 MB, bootable raw) — qemu VM boot
+│   ├─ SHA256, SHA256.sig
+│   └─ miniroot79.img       (unused — minimal, no GUI variant)
+│
+├─ armv7-snapshot/        [PROVENANCE: cdn.openbsd.org/.../snapshots/armv7/]
+│   ├─ SHA256.sig, INSTALL.armv7, BOOTARM.EFI
+│   └─ base79.tgz comp79.tgz game79.tgz man79.tgz xbase79.tgz xfont79.tgz xserv79.tgz xshare79.tgz
+│
+├─ dm250/                 [PROVENANCE: jcs.org/2026/04/09/openbsd-dm250]
+│   ├─ bsd                  DM250 用カスタム armv7 kernel
+│   ├─ bsd.rd               DM250 用 install ramdisk
+│   ├─ uboot.img, _sdboot.sh, restore.sh
+│   ├─ rk3128_ddr_300MHz_v2.12.bin, u-boot-ums.bin
+│   └─ logo.bmp             起動ロゴ
+│
+├─ firmware/              [PROVENANCE: bwfm = signify-signed tarball / hcd = armbian]
+│   ├─ bwfm-firmware-20200316.1.3p5.tgz, SHA256.sig
+│   └─ bcm43438a1.hcd       (実機展開時に BCM4343A1.hcd へリネーム)
+│
+└─ dm250/backup-tool/...  [PROVENANCE: ekesete.net/log/?p=9504, DM200_DM250_emmc_backup_restore_v0.2/]
+```
+
+> [!NOTE]
+> The 3 first-party scripts are the only files this repo physically checks in
+> under `install/files/`. Everything else is fetched per `PROVENANCE.md` URLs.
+> A fresh clone is therefore **incomplete on purpose** — see
+> [`../install/02-make-sd.md`](../install/02-make-sd.md) §2.1 for the
+> "in-tree vs fetched" note in the user-facing install flow.
 
 ### 1.4 Data flow
 

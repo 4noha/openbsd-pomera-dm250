@@ -25,6 +25,25 @@ SD prep には OpenBSD ホストが要る (`signify(1)` / `newfs(8)` / `disklabe
 §2.3〜§2.5 は原典ベースの手動手順で、A の自動化に問題が出たときの再現
 材料として残してある。
 
+> [!NOTE]
+> **`install/files/` の構成 (両経路共通)**
+>
+> 以降の手順で叩く `install/files/` には 2 系統のファイルが入る:
+>
+> - **first-party scripts** — `qemu-prep-sd.sh` / `driver.py` / `prep-sd.sh`
+>   はリポ同梱。clone すればそのまま揃う。
+> - **配布物バイナリ** — `armv7-snapshot/*.tgz`, `arm64-snapshot/install79.img`,
+>   `dm250/{bsd,bsd.rd,uboot.img,logo.bmp,...}`, `firmware/bwfm-firmware-*.tgz`,
+>   `firmware/bcm43438a1.hcd`, `dm250/backup-tool/...` などは権利・サイズの
+>   都合でリポには含めない。[`PROVENANCE.md`](PROVENANCE.md) の URL から
+>   各自取得して同 dir に展開する。
+>
+> 以降の手順で参照する `~/works/openbsd-pomera-dm250-staging/install/files/`
+> は、本リポを clone して配布物を入れ終えた状態の `install/files/` の
+> ことを指す。リポ clone 直下で作業しても、別ディレクトリに rsync して
+> 作業しても (`rsync -a <repo>/install/files/ ~/works/.../staging/install/files/`)
+> どちらでも構わない。
+
 ## 2.2 ファイル一式を OpenBSD ホストへ転送 (経路 B のみ)
 
 ```sh
