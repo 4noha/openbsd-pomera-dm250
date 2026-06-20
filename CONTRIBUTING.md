@@ -77,6 +77,32 @@ Out of scope:
   `<your-wifi-ssid>`, …) instead. CI will reject PRs that reintroduce
   the redacted strings.
 
+## Curated subset (what this repo is and is not)
+
+This repository is a **curated subset** of the maintainer's internal
+working tree, not a 1:1 mirror. Several categories of content live
+upstream of this repo and are intentionally **not** synced:
+
+- Internal session notes (raw ddb traces tied to individual debug runs,
+  multi-author coordination memos, ad-hoc trial logs).
+- Long prose deep-dives kept as scratch documentation (e.g. the longer
+  forms of `install.md` and the mlterm-fb event history) — the public
+  copies are tighter, runnable distillations.
+- Anything that would re-introduce a redacted value listed under
+  "No private placeholders" above.
+- Device-specific data extracted from a particular DM250 (e.g. the 21-
+  point OCV curve from the factory dtb, the SD's 16-hex DUID). These
+  appear as placeholders (`PLACE_OCV_FROM_FACTORY_DTB_*`,
+  `<dm250-sd-duid>`); downstream users supply their own values per
+  `battery/README.md` / `harness/README.md`.
+
+What **does** land here is the reproducible install / build / deploy
+artifacts, the canonical patch series, and the runnable userland
+tooling. If you are contributing back, write to the public structure
+and use the placeholder set above — the maintainer will not pull in
+raw working-tree notes verbatim, but distilled improvements to the
+public docs and scripts are welcome.
+
 ## Patch format for `kernel-patches/`
 
 - One logical change per patch file.
