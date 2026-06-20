@@ -95,6 +95,27 @@ alpha build aimed at sideloaders, not Play). If you want a custom icon,
 drop one under `app/src/main/res/mipmap-*/` and add
 `android:icon="@mipmap/ic_launcher"` to the `<application>` tag.
 
+## Download (sideload-ready APK)
+
+Each tagged build is also published as a GitHub Release with the
+debug-signed APK attached:
+
+- **Latest pre-release**: [`wake-android-tether-v0.3.0`](https://github.com/4noha/openbsd-pomera-dm250/releases/tag/wake-android-tether-v0.3.0)
+- All releases: <https://github.com/4noha/openbsd-pomera-dm250/releases>
+
+Sideload directly without building:
+
+```bash
+gh release download wake-android-tether-v0.3.0 \
+  --repo 4noha/openbsd-pomera-dm250 \
+  --pattern '*.apk' \
+  --output wake-android-tether.apk
+adb install wake-android-tether.apk
+```
+
+Verify the SHA-256 against the value listed in the release notes
+before installing.
+
 ## Build
 
 Standard Gradle. Wrapper JAR is checked in.
