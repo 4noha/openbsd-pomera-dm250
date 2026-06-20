@@ -160,7 +160,7 @@ If `/tmp/dm250-runner.log` reaches **`SD-PREP-COMPLETE`** it worked. If not, the
 
 ### 1.9 Git status
 
-`prep-sd.sh` / `driver.py` / `qemu-prep-sd.sh` live under `install/files/` as plain checked-in files. The 660 MB `arm64-snapshot/` binaries are intentionally **not** tracked; re-fetch them from `cdn.openbsd.org/pub/OpenBSD/snapshots/arm64/`. See `install/files/PROVENANCE.md` for the URLs.
+`prep-sd.sh` / `driver.py` / `qemu-prep-sd.sh` live under `install/files/` as plain checked-in files. The 660 MB `arm64-snapshot/` binaries are intentionally **not** tracked; re-fetch them from `cdn.openbsd.org/pub/OpenBSD/snapshots/arm64/`. See `install/PROVENANCE.md` for the URLs.
 
 ---
 

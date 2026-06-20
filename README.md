@@ -43,6 +43,21 @@ throughout this repo.
 > path are different from the JP-region models, and none of the
 > patches in `kernel-patches/` have been tested against it.
 
+## Host requirements (Mac side)
+
+The SD-prep automation and the kernel cross-build VM both target macOS
+on Apple Silicon. Specifically:
+
+- **arm64 macOS** with **HVF enabled** (`sysctl kern.hv_support` → 1).
+  Intel Macs and Linux hosts are not exercised by the bundled scripts;
+  see `docs/build-vm.md` §1.2 for the verified host matrix.
+- `brew install qemu` (qemu 11.x), Python 3.x (for `driver.py`), and
+  `gh` authenticated (for fetching prebuilt artifacts from GitHub
+  Releases). Optional: `dtc` / `xcodegen` only if you build kernels.
+- A microSD card (≥ 16 GB recommended) and a way to read it from the
+  Mac. The card is reused for both the eMMC backup and the OpenBSD
+  installer.
+
 ## Architecture overview
 
 ```
@@ -68,6 +83,11 @@ heavy — language servers, AI tooling, large editors — runs on the home
 box and is reached through `ssh` + `tmux attach`.
 
 ## Two paths to a working DM250
+
+> [!TIP]
+> **Start here: [`install/README.md`](install/README.md)** carries the
+> chapter-by-chapter walkthrough (01 eMMC backup → 07 recovery). The two
+> sub-sections below just summarize *which* binaries land on the device.
 
 There are two supported ways to use this repository. They share the
 exact same end state.
@@ -106,7 +126,7 @@ reboot. The full step-by-step is in `install/README.md`.
 
 If you do not trust the prebuilts, or if you want to modify a patch,
 the cross-build flow lives in `docs/build-vm.md` and
-`docs/kernel-cross-build.md`. The short version:
+`docs/cross-build-kernel.md`. The short version:
 
 ```sh
 # on mac (Apple Silicon recommended)
@@ -138,7 +158,7 @@ its own README and is meant to be readable in isolation.
 | `logo/`                   | A small extractor + replacement tool for the DM250 splash logo. Sources the factory image from *your own* eMMC backup; nothing copyrighted ships in this repo. |
 | `battery/`                | An OCV-corrected PS1 prompt that calls into the RK818 fuel-gauge counters and corrects for the gauge's well-known idle drift. |
 | `tailscale-optional/`     | The thin-client wiring: `tailscale up` arguments, ACL hints, an `~/.ssh/config` template that points `<pomera-host>` at the right tmux session. |
-| `docs/`                   | Cross-build VM setup (qemu HVF arm64 on Apple Silicon, reusable for any armv7 cross-build), kernel cross-build steps, and the OCV / battery math derivation. |
+| `docs/`                   | Cross-build VM setup (qemu HVF arm64 on Apple Silicon, reusable for any armv7 cross-build), the armv7 kernel cross-build procedure, and the BT (bcmbt) patch design rationale. The OCV / battery math derivation lives in `battery/` next to the code it documents. |
 | `prebuilt-info/`          | A manifest of the binary artifacts published to GitHub Releases, with names, SHA256 hashes, and a one-line description of what each artifact is. The artifacts themselves live in Releases, not in the git tree. |
 
 If you only want the device working, read `install/` first and circle
@@ -236,8 +256,8 @@ will almost certainly void your warranty, may brick your device, and
 absolutely requires that you have a tested eMMC backup before you
 start.
 
-See [`install/README.md`](install/) for the backup procedure. Do not
-skip it.
+See [`install/README.md`](install/README.md) for the backup procedure.
+Do not skip it.
 
 [jcs-post]: https://jcs.org/2024/01/15/dm250
 [jcs-src]: https://github.com/jcs/openbsd-src

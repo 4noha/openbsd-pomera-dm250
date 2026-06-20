@@ -179,8 +179,8 @@ ssh pomera
 
 ```sh
 # on mac (Tailscale 経由デプロイ)
-scp install/files/netwatchd.sh   pomera:/tmp/
-scp install/files/netwatchd.rc.d pomera:/tmp/
+scp harness/netwatchd.sh   pomera:/tmp/
+scp harness/netwatchd.rc.d pomera:/tmp/
 
 # on pomera (installed)
 doas install -m 0755 /tmp/netwatchd.sh   /usr/local/sbin/netwatchd.sh
