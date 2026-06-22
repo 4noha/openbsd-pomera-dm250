@@ -131,7 +131,7 @@ The installer ramdisk is **not** the same environment as a normal OpenBSD instal
 | 2 | No `tail` binary | drop the preflight tail; not strictly needed |
 | 3 | `/dev/sd1*` nodes missing initially | prepend `cd /dev && sh ./MAKEDEV sd1` to the script |
 | 4 | `signify -Cqp -x` prints `-V` usage (broken `-C` mode or pubkey path issue on the ramdisk) | **skip signature verification** in the VM; transport integrity is assured by the loopback HTTP serving files that the Mac side already verified with `shasum -c` |
-| 5 | Modern `fdisk -g` creates partition `a` automatically when it lays out GPT, so the original guide's `echo -e "a\n..\nw\nx" \| disklabel -E` fails on the already-present `a` and tries to add `b` | **remove the disklabel step entirely** |
+| 5 | ~~Modern `fdisk -g` auto-exposes partition `a`, so `disklabel -E` is redundant.~~ **Retracted (2026-06-22)**: at least one 7.9 snapshot date / SD geometry does **not** auto-expose, and `newfs /dev/r<sd>a` then fails with "device not configured". `prep-sd.sh` now runs `echo -e "a\n\n\n\n\nw\nx" \| disklabel -E sd1` unconditionally per the jcs runbook | **keep the jcs disklabel step; don't trust auto-expose** |
 | 6 | qemu `-display none` captures stdio so the harness cannot drive it | replace with `-serial unix:SOCK,server,nowait`, drive via Python expect over the UNIX socket |
 | 7 | `dhclient` was removed in OpenBSD 7.x in favor of `dhcpleased` | use `ifconfig vio0 inet autoconf` + `dhcpleased &` |
 | 8 | On the **real DM250** during installer, the JIS keyboard layout is not recognized, so `>` / `\` etc. cannot be typed | avoid shell redirection; e.g. use `touch file` instead of `echo -n > file` |

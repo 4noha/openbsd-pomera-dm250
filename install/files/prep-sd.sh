@@ -38,11 +38,19 @@ if [ "${YES:-}" != "1" ]; then
 fi
 
 say "step 1: GPT + filesystems"
-# fdisk -g creates the GPT with the 100MB EFI partition (-b 204800) AND
-# an OpenBSD partition covering the rest. Modern disklabel auto-exposes
-# the OpenBSD MBR/GPT slot as partition 'a' (4.2BSD) and the MSDOS slot
-# as partition 'i', so no explicit disklabel editing is needed.
+# fdisk -g creates the GPT (100 MiB EFI at slot 1 via -b 204800, OpenBSD
+# slice at slot 2 covering the rest).
 fdisk -ygb 204800 "$SD"
+# Materialize partition 'a' (4.2BSD = FFS) inside the OpenBSD slice with
+# the jcs reference incantation. An earlier version of this script omitted
+# this step on the theory that "modern" disklabel auto-exposes partition
+# 'a' from the GPT layout. That assumption turned out to be wrong in the
+# field — at least some 7.9 snapshot dates / SD geometries do *not*
+# auto-expose, and `newfs /dev/r${SD}a` then fails with "device not
+# configured" and aborts step 1. Doing this unconditionally is
+# idempotent enough (matches the jcs runbook either way) and removes the
+# failure mode.
+echo -e "a\n\n\n\n\nw\nx" | disklabel -E "$SD"
 newfs "/dev/r${SD}a"
 newfs_msdos "/dev/r${SD}i"
 
